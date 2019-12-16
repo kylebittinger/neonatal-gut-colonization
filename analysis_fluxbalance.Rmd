@@ -1,0 +1,47 @@
+---
+title: "IGRAM Flux Balance Expanded"
+author: "Kyle Bittinger"
+date: "8/1/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(viridis)
+```
+
+```{r}
+fb <- read_csv("revision_data/igram_fluxbalance_expanded - Sheet1.csv") %>%
+  fill(Species, Strain, BlockedAcetate)
+```
+
+```{r}
+fb %>%
+  gather(Product, Flux, ATP, Acetate, Succinate, Malate) %>%
+  mutate(Species = str_replace(Species, " ", "\n")) %>%
+  mutate(Product = fct_relevel(Product, "ATP", "Acetate", "Succinate")) %>%
+  mutate(BlockedLabel = fct_relevel(
+    ifelse(BlockedAcetate, "Blocked acetate", "With acetate"), 
+    "With acetate")) %>%
+  mutate(Substrate = fct_rev(fct_relevel(
+    Substrate, "Serine", "Threonine", "Asparagine", "Sucrose", 
+    "Trehalose", "Carnitine", "Cystathione", "Homoserine"))) %>%
+  filter(!is.na(Flux)) %>%
+  ggplot() +
+  geom_tile(aes(x=Product, y=Substrate, fill=Flux)) +
+  facet_grid(Species ~ BlockedLabel, scales="free_y", space="free_y") +
+  labs(x="", y="") +
+  scale_fill_viridis() +
+  theme_bw() +
+  #coord_equal() +
+  theme(
+    axis.text.x = element_text(angle=60, hjust=1, vjust=1),
+    strip.background = element_blank(),
+    strip.text.y = element_text(angle=0, hjust=0, face="italic"))
+ggsave("igram_fluxbalance_expanded.pdf", height=6, width=4.75)
+```
+

@@ -1,0 +1,655 @@
+---
+title: "IGRAM metabolites"
+author: "Kyle Bittinger"
+date: "April 30, 2018"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+not.na <- function (x) !is.na(x)
+`%not.in%` <- function (x, vals) !(x %in% vals)
+```
+
+# Setup
+
+```{r}
+library(tidyverse)
+library(qiimer)
+library(ggbeeswarm)
+library(vegan)
+library(broom)
+library(ape)
+library(readxl)
+library(ggpubr)
+```
+
+## Palettes
+
+```{r}
+host_palette <- c("#084081", "#41AB5D")
+```
+
+
+# Load data
+
+```{r}
+group16_levels <- c(
+  "Before 16 hours", "After 16 hours, non-host DNA < 25%", 
+  "After 16 hours, non-host DNA > 25%")
+s0_clinical <- readRDS("s0_clinical.RDS")
+
+```
+
+```{r}
+load("IGRAM masterFiles/[datap]_fecalMetabolites_sinfo.RData")
+load("IGRAM masterFiles/[datap]_fecalTargetNorm.RData")
+write_csv(fecalTarget, "patterson_igram_fecal_metabolite_table.csv")
+```
+
+```{r}
+str_to_sentence_case <- function (x) {
+  paste0(toupper(substr(x, 1, 1)), substr(x, 2, nchar(x)))
+}
+
+metab_names <- read_csv("metabolite_corrected_names.csv") %>%
+  filter(!is.na(CorrectedMetabolite))
+
+metab <- fecalTarget %>%
+  rownames_to_column("Metabolite") %>%
+  mutate(Metabolite = str_to_sentence_case(Metabolite)) %>%
+  gather(SampleID_fecalMetabolites, Concentration, -Metabolite) %>%
+  left_join(fecalMetabolites_sinfo, by="SampleID_fecalMetabolites") %>%
+  rename(visit.clinical = visit) %>%
+  filter(visit.clinical %in% "04_days") %>%
+  left_join(metab_names, by="Metabolite") %>%
+  rename(UncorrectedMetabolite = Metabolite) %>%
+  mutate(Metabolite = ifelse(is.na(CorrectedMetabolite), UncorrectedMetabolite, CorrectedMetabolite))
+
+write_csv(metab, "untargeted_metabolites.csv")
+```
+
+```{r}
+m_nmr <- read_excel("IGRAM_Stool_NMR_Version2 (2).xlsx") %>%
+  rename(SubjectID = `Subject ID`, visit.clinical = Visit)
+```
+
+```{r}
+m_nmr_long <- m_nmr %>%
+  gather(Metabolite, Concentration, -(1:4)) %>%
+  inner_join(s0_clinical, by=c("SubjectID", "visit.clinical"))
+m_nmr_birth <- m_nmr_long %>%
+  filter(Visit %in% "Birth")
+```
+
+```{r}
+m_nmr_acetate <- m_nmr_birth %>%
+  filter(Metabolite %in% "Acetate")
+write_csv(m_nmr_acetate, "nmr_acetate_concentration.csv")
+```
+
+
+```{r}
+metab %>%
+  with(Metabolite) %>%
+  unique() %>%
+  sort() %>%
+  writeLines("all_metabolite_names.txt")
+```
+
+
+```{r message=FALSE}
+mp <- read_tsv("data_igram_run1/taxonomic_assignments.tsv") %>%
+  gather(SampleID, Proportion, -Term) %>%
+  mutate(SampleID = sub("PCMP_", "", SampleID)) %>%
+  mutate(SampleID = sub("1-4d", "1.4d", SampleID)) %>%
+  filter(grepl("1.4d", SampleID)) %>%
+  separate(SampleID, c("SampleHead", "TimePoint"), sep="_", remove=FALSE) %>%
+  separate(SampleHead, c("SubjectID", "SampleType", "TimeCode"), sep="\\.", remove=FALSE) %>%
+  do(cbind(., split_assignments(.$Term, split = "\\|"))) %>%
+  mutate_at(taxonomic_ranks, funs(sub("^[kpcofgs]__", "", .))) %>%
+  mutate_at(taxonomic_ranks, funs(gsub("_", " ", .)))
+```
+
+
+```{r}
+strain_taxa <- read_csv("strain_taxa.csv")
+strains <- read_tsv("strain_counts.txt") %>%
+  mutate_at(-c(1,2), funs(ifelse(is.na(.), 0, .))) %>%
+  mutate(
+    `Klebsiella pneumoniae` = `Klebsiella pneumoniae` + 
+      `Klebsiella pneumoniae_1`) %>%
+  select(-`Klebsiella pneumoniae_1`) %>%
+  gather(Species, StrainNum, -SampleID, -Status) %>%
+  left_join(strain_taxa, by="Species") %>%
+  mutate(Species = ifelse(
+    is.na(CorrectedSpecies), Species, CorrectedSpecies)) %>%
+  mutate(Species = ifelse(
+    grepl(" ", Species), Species, paste(Species, "sp."))) %>%
+  mutate(Taxon = factor(Taxon)) %>%
+  left_join(s0_clinical, by="SampleID")
+strains_present <- strains %>% filter(StrainNum > 0)
+ecoli_assembled <- strains %>% 
+  filter(StrainNum > 0) %>%
+  filter(Species %in% "Escherichia coli")
+```
+
+# Summary heatmap
+
+```{r}
+df_to_matrix <- function (df, as_rowname, as_colname, as_value) {
+  df %>%
+    select_(as_rowname, as_colname, as_value) %>%
+    spread(as_colname, as_value) %>%
+    as.data.frame() %>%
+    column_to_rownames(as_rowname) %>%
+    as.matrix()
+}
+```
+
+
+```{r}
+
+heatmap_metabolites_order <- c(
+  "Serine", "Threonine", "Trehalose/sucrose", "Carnitine",
+  "Acetate", "Succinate", "Fumarate", "Malate")
+heatmap_subject_order <- s0_clinical %>%
+  arrange(hrs_to_collection, SubjectID) %>%
+  with(SubjectID)
+
+metab_acetate <- m_nmr_birth %>%
+  filter(Metabolite %in% "Acetate") %>%
+  select(SubjectID, visit.clinical, Metabolite, Concentration)
+metab_other <- metab %>%
+  filter(Metabolite %in% heatmap_metabolites_order) %>%
+  select(SubjectID, visit.clinical, Metabolite, Concentration)
+
+metab_mat <-bind_rows(metab_acetate, metab_other) %>%
+  full_join(s0_clinical, by=c("SubjectID", "visit.clinical")) %>%
+  complete(Metabolite, SubjectID) %>% 
+  filter(!is.na(Metabolite)) %>% 
+  mutate(SubjectID = fct_reorder(SubjectID, hrs_to_collection)) %>%
+  select(SubjectID, Metabolite, Concentration) %>%
+  df_to_matrix("SubjectID", "Metabolite", "Concentration")
+metab_mat <- metab_mat[heatmap_subject_order, heatmap_metabolites_order]
+metab_mat <- scale(metab_mat)
+
+write_csv(
+  data_frame(SubjectID = rownames(metab_mat)),
+  "summary_heatmap_subject_ids.csv")
+```
+
+```{r}
+metab_palette <- colorRampPalette(
+  RColorBrewer::brewer.pal(9, "BuPu")[1:3], bias=1)(100)
+metab_palette <- colorRampPalette(
+  rev(RColorBrewer::brewer.pal(n = 7, name = "RdBu")), bias=3.2)(100)
+
+pheatmap::pheatmap(
+  metab_mat, color = metab_palette,
+  filename = "igram_meconium_revision_figS26_metab.pdf",
+  cluster_cols = F, cluster_rows = F,
+  cellwidth=10, cellheight=10)
+```
+
+
+
+# Substrate analysis
+
+```{r}
+substrates <- c(
+  "Serine", "Asparagine", "Aspartate", "Threonine", 
+  "Trehalose/sucrose"
+)
+metab_substrates <- metab %>%
+  filter(Metabolite %in% substrates) %>%
+  mutate(Metabolite = fct_relevel(Metabolite, substrates))
+```
+
+
+```{r}
+metab_substrates %>%
+  left_join(s0_clinical, by=c("SubjectID", "visit.clinical")) %>%
+  mutate(AssembledEcoli = SubjectID %in% ecoli_assembled$SubjectID) %>%
+  ggplot(aes(x=SubjectID, y=Concentration, color=Metabolite, shape=AssembledEcoli)) +
+  geom_point() +
+  scale_shape_manual(values=c(19, 1)) +
+  facet_grid(Metabolite ~ HostGroup, scales = "free", space="free_x") +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))
+ggsave("igram_metabolite_substrates.pdf", width=12, height=6)
+```
+# Product analysis
+
+```{r}
+products <- c(
+  "Acetate", "Succinate", "Propionate"
+)
+metab_products <- m_nmr_long %>%
+  filter(Metabolite %in% products) %>%
+  mutate(Metabolite = fct_relevel(Metabolite, products))
+```
+
+
+```{r}
+metab_products %>%
+  inner_join(s0_clinical, by=c("SubjectID", "visit.clinical")) %>%
+  mutate(AssembledEcoli = SubjectID %in% ecoli_assembled$SubjectID) %>%
+  ggplot(aes(x=SubjectID, y=Concentration, color=Metabolite, shape=AssembledEcoli)) +
+  geom_point() +
+  scale_shape_manual(values=c(19, 1)) +
+  scale_y_sqrt() +
+  facet_grid(Metabolite ~ Group16, scales = "free", space="free_x") +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))
+```
+
+# Amino acid analysis
+
+```{r}
+metab %>% 
+  filter(Metabolite %in% c("Serine", "Threonine")) %>%
+  left_join(mp %>% filter(Species %in% "Escherichia coli"), by="SubjectID") %>%
+  left_join(s0_clinical, by=c("SubjectID", "visit.clinical")) %>%
+  mutate(MostlyHuman = HostProp > 0.75) %>%
+  ggplot() +
+  geom_point(aes(y=Concentration, x=hrs_to_collection, color=Proportion)) +
+  facet_grid(MostlyHuman ~ Metabolite) +
+  theme_bw()
+```
+
+# Succinate analysis
+
+```{r}
+ef_ec <- mp %>% 
+  filter(Species %in% c("Escherichia coli", "Enterococcus faecalis")) %>%
+  group_by(SubjectID) %>%
+  summarize(Proportion = sum(Proportion))
+succinate_df <- metab %>% 
+  filter(Metabolite %in% c("Succinate")) %>%
+  left_join(ef_ec, by="SubjectID") %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  mutate(MostlyHuman = HostProp > 0.25) %>%
+  mutate(HasTaxon = Proportion > 0.05) 
+succinate_df %>%
+  ggplot(aes(y=Concentration, x=hrs_to_collection)) +
+  geom_point(aes(color=MostlyHuman)) +
+  facet_grid(~ HasTaxon + Metabolite) +
+  scale_y_sqrt() +
+  theme_bw()
+```
+
+```{r}
+succinate_df %>%
+  lm(Concentration ~ hrs_to_collection + HasTaxon, data=.) %>%
+  summary()
+```
+
+# All metabolites
+
+```{r}
+metab %>%
+  group_by(Metabolite) %>%
+  mutate(PropNonzero = mean(Concentration > 0)) %>%
+  ggplot() +
+  geom_histogram(aes(x=PropNonzero), binwidth=0.02, center=0.01)
+```
+
+```{r}
+metab_stats <- metab %>%
+  right_join(s0_clinical %>% filter(!is.na(Group16)), by="SubjectID") %>%
+  group_by(Metabolite, Group16) %>%
+  summarise(
+    MeanConc = mean(Concentration),
+    FracNonZero = mean(Concentration > 0)
+  )
+```
+
+
+
+```{r}
+metab_totest <- metab %>%
+  group_by(Metabolite) %>%
+  mutate(PropNonzero = mean(Concentration > 0)) %>%
+  ungroup() %>%
+  filter(PropNonzero > 0.25)
+```
+
+```{r}
+logit <- function (x) log(x / (1 - x))
+metab_tests <- metab_totest %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  group_by(Metabolite) %>%
+  #mutate(NormConc = scale(ifelse(Concentration > 0, Concentration, 0.1))) %>%
+  do(tidy(cor.test(~ Concentration + HostProp, data=., method="kendall"))) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+metab_sig <- metab_tests %>%
+  filter(fdr < 0.01)
+```
+
+```{r}
+df_to_matrix <- function (df, as_rowname, as_colname, as_value) {
+  df %>%
+    select_(as_rowname, as_colname, as_value) %>%
+    spread(as_colname, as_value) %>%
+    as.data.frame() %>%
+    column_to_rownames(as_rowname) %>%
+    as.matrix()
+}
+
+metab_sig_mat <- metab %>%
+  right_join(metab_sig, by="Metabolite") %>%
+  group_by(Metabolite) %>%
+  mutate(NormConc = scale(Concentration)) %>%
+  ungroup() %>%
+  df_to_matrix("Metabolite", "SubjectID", "NormConc")
+
+subject_order <- s0_clinical %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  filter(!(SubjectID %in% "s309")) %>%
+  arrange(Group16, hrs_to_collection) %>%
+  with(SubjectID)
+
+metab_order <- metab_sig %>%
+  arrange(estimate) %>%
+  with(Metabolite)
+
+metab_palette <- colorRampPalette(
+  RColorBrewer::brewer.pal(9, "BuPu")[1:3], bias=1)(100)
+metab_palette <- colorRampPalette(
+  rev(RColorBrewer::brewer.pal(n = 7, name = "RdBu")), bias=3.2)(100)
+
+pheatmap::pheatmap(
+  metab_sig_mat[metab_order,subject_order], 
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE,
+  gaps_col = c(32, 53),
+  gaps_row = 21,
+  color = metab_palette,
+  #color = viridis::inferno(100),
+  cellwidth = 9, cellheight = 12,
+  filename = "igram_meconium_signif_metabolites_labeled.pdf"
+)
+
+pheatmap::pheatmap(
+  metab_sig_mat[metab_order,subject_order], 
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE,
+  gaps_col = c(32, 53),
+  gaps_row = 21,
+  color = metab_palette,
+  #color = viridis::inferno(100),
+  cellwidth = 5, cellheight = 12,
+  show_colnames = FALSE,
+  filename = "igram_meconium_signif_metabolites.pdf"
+)
+pheatmap::pheatmap(
+  metab_sig_mat[metab_order,subject_order], 
+  cluster_rows = FALSE, 
+  cluster_cols = FALSE,
+  gaps_col = c(32, 53),
+  gaps_row = 21,
+  color = metab_palette,
+  #color = viridis::inferno(100),
+  cellwidth = 5, cellheight = 12,
+  show_colnames = FALSE,
+  filename = "igram_meconium_signif_metabolites.png",
+  res=300
+)
+```
+
+TODO: Show that low bacterial DNA groups are more similar
+
+```{r}
+metab_sig_data <- metab %>%
+  inner_join(metab_sig %>% select(Metabolite), by="Metabolite") %>%
+  inner_join(s0_clinical %>% filter(!is.na(Group16)), by="SubjectID") 
+metab_sig_data %>%
+  mutate(MetaboliteLabel = str_replace(Metabolite, " ", "\n")) %>%
+  ggplot() +
+  geom_boxplot(aes(x=Group16, y=Concentration)) +
+  facet_wrap(~ MetaboliteLabel, scales = "free_y", ncol=4)
+ggsave("igram_metabolite_boxplots.pdf", width=10, height=12, useDingbats=F)
+  
+```
+
+
+
+# Acetate analysis
+
+## vs human DNA
+
+```{r}
+m_nmr_birth %>%
+  filter(Metabolite %in% "Acetate") %>%
+  filter(!is.na(Group16), !is.na(Concentration)) %>%
+  mutate(Group16Label = `levels<-`(
+    Group16, str_replace(levels(Group16), ", ", ",\n"))) %>%
+  ggplot() +
+  geom_boxplot(aes(x=Group16Label, y=Concentration)) +
+  scale_y_sqrt(
+    breaks = c(0.05, 0.25, 0.5, 1, 1.5, 2), 
+    limits=c(0, 2.3)) +
+  labs(y = expression(paste("Acetate concentration (", mu, "mol/ng)")), x="", parse=T) +
+  theme_bw()
+ggsave("igram_acetate_boxplot.pdf", width=5, height=4, useDingbats=F)
+
+```
+
+
+```{r}
+pres_palette <- c("#4DBBD5", "#E64B35")
+m_nmr_birth %>%
+  filter(Metabolite %in% "Acetate") %>%
+  filter(!is.na(Group16), !is.na(Concentration)) %>%
+  filter(Concentration < 0.5) %>%
+  mutate(StrainsPres = ifelse(
+    Group16 %in% "After 16h, human DNA < 75%", 
+    "Bacteria\ndetected", "Bacteria\nnot detected")) %>%
+  mutate(StrainsPres = fct_rev(StrainsPres)) %>%
+  ggplot(aes(x=StrainsPres, y=Concentration)) +
+  geom_boxplot(aes(fill=StrainsPres), coef=1e9) +
+  scale_fill_manual(values = pres_palette) +
+  scale_y_sqrt(breaks = c(0.01, 0.05, 0.15, 0.25, 0.35)) +
+  #  limits=c(0, 2.3)) +
+  labs(y = expression(paste("Acetate concentration")), x="", parse=T) +
+  theme_bw()
+ggsave("igram_acetate_boxplot_pres.png", width=5, height=3.4, dpi=300)
+```
+
+
+```{r}
+m_nmr %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  filter(!is.na(Group16), !is.na(Acetate)) %>%
+  ggplot() +
+  geom_boxplot(aes(x=Group16, y=Acetate)) +
+  scale_y_sqrt(breaks = c(0.05, 0.25, 0.5, 1, 1.5, 2), limits=c(0, 2.3)) +
+  labs(y = expression(paste("Acetate concentration (", mu, "mol/ng)")), x="", parse=T) +
+  theme_bw()
+ggsave("igram_acetate_boxplot_small.pdf", width=3.7, height=3, useDingbats=F)
+ggsave("igram_meconium_poster_acetate.png", width=3.6, height=3, dpi=800)
+```
+
+```{r}
+acetate_breaks <- c("0.05", "0.25", "0.50", "1.00", "1.50", "2.00", "2.50")
+m_nmr_birth %>%
+  filter(Metabolite %in% "Acetate") %>%
+  filter(!is.na(Group16), !is.na(Concentration)) %>%
+  mutate(Group16Label = `levels<-`(
+    Group16, str_replace(levels(Group16), ", ", ",\n"))) %>%
+  ggplot(aes(x=Group16Label, y=Concentration, fill=Group16Label)) +
+  geom_boxplot() +
+  ggsci::scale_fill_jco(guide=F) +
+  scale_y_sqrt() +
+  #  breaks = as.numeric(acetate_breaks), 
+  #  labels = acetate_breaks) +
+  stat_compare_means(comparisons = combn(3, 2, simplify = FALSE)) +
+  stat_compare_means(label.y = 2.1) +
+  labs(
+    y = expression(paste("Acetate concentration (", mu, "mol/ng)")), 
+    x="", fill="", parse=T) +
+  theme_bw()
+ggsave("igram_acetate_boxplot_pvals.pdf", width=4, height=4)
+ggsave("igram_meconium_revision_figS21A.pdf", width=4.5, height=4, useDingbats=F)
+ggsave("igram_meconium_revision_figS21A.png", width=4.5, height=4, dpi=300)
+```
+
+```{r}
+m_nmr_birth %>%
+  filter(Metabolite %in% "Acetate") %>%
+  filter(!is.na(Group16), !is.na(Concentration)) %>%
+  count(Group16)
+```
+
+```{r}
+m_nmr_birth %>%
+  filter(Metabolite %in% "Acetate") %>%
+  filter(!is.na(Group16), !is.na(Concentration)) %>%
+  mutate(AfterLow = Group16 %in% "After 16h, human DNA < 75%") %>%
+  wilcox.test(Concentration ~ AfterLow, data=.)
+```
+
+
+```{r}
+m_nmr %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  filter(!is.na(HostGroup), !is.na(Acetate)) %>%
+  wilcox.test(Acetate ~ HostGroup, conf.int = TRUE, data=.)
+m_nmr %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  filter(!is.na(Group16), !is.na(Acetate)) %>%
+  kruskal.test(Acetate ~ Group16, data=.)
+```
+
+Correlate acetate with level of host DNA and qPCR values
+
+## vs qPCR
+
+```{r}
+library(ggrepel)
+m_acetate <- m_nmr_birth %>%
+  filter(Metabolite %in% "Acetate") %>%
+  filter(!is.na(Concentration)) %>%
+  mutate(Concentration = if_else(Concentration > 0, Concentration, 1e-4)) %>%
+  mutate(CopyNum = ifelse(
+    is.na(copy_num_per_gram_feces), 
+    1000, 
+    copy_num_per_gram_feces))
+acetate_lm <- m_acetate %>%
+  lm(log10(Concentration) ~ log10(CopyNum), data=.)
+
+acetate_labels <- m_acetate %>%
+  filter(Concentration > 0.5)
+m_acetate %>%
+  ggplot(aes(x=CopyNum, y=Concentration)) +
+  geom_point(aes(color=HostGroup), shape=1) +
+  geom_text_repel(aes(label=SubjectID), data=acetate_labels) +
+  geom_smooth(method = "lm") +
+  geom_vline(xintercept = 1000, linetype="dashed") +
+  scale_x_log10() +
+  scale_y_sqrt() +
+  #scale_y_log10(breaks = c(0.0001, 0.001, 0.01, 0.1, 1)) +
+  scale_color_manual(values = host_palette) +
+  labs(
+    color="",
+    y = expression(paste("Acetate concentration (", mu, "mol/ng)")), 
+    x="16S copy number per gram feces", parse=TRUE) +
+  theme_bw()
+ggsave("igram_acetate_qpcr.pdf", width=7, height=3)
+ggsave("igram_meconium_revision_figS21B.pdf", width=7, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS21B.png", width=7, height=3, dpi=300)
+```
+
+```{r}
+summary(acetate_lm)
+m_acetate %>%
+  cor.test(~ Concentration + CopyNum, data=., method="spearman")
+```
+
+```{r}
+m_acetate %>%
+  filter(!is.na(Concentration), !is.na(CopyNum)) %>%
+  count()
+```
+
+
+```{r}
+m_acetate <- m_nmr_birth %>%
+  filter(Metabolite %in% "Acetate") %>%
+  filter(!is.na(Concentration)) %>%
+  mutate(Detected16S = if_else(
+    is.na(copy_num_per_gram_feces), 
+    "Below limit of detection", 
+    "Above limit of detection")) %>% 
+  mutate(Detected16S = fct_relevel(
+    Detected16S, "Below limit of detection")) 
+m_acetate %>%
+  mutate(Concentration = if_else(Concentration > 0, Concentration, 4e-4)) %>%
+  ggplot() +
+  geom_boxplot(aes(x=Detected16S, y=Concentration, fill=Detected16S)) +
+  scale_y_sqrt() +
+  ggsci::scale_fill_simpsons(guide=F) +
+  labs(y = expression(paste("Acetate concentration (", mu, "mol/ng)")), 
+    x="16S qPCR result", parse=TRUE) +
+  theme_bw()
+
+```
+
+
+```{r}
+m_acetate %>%
+  mutate(Detected16S = not.na(copy_num_per_gram_feces)) %>% 
+  wilcox.test(Concentration ~ Detected16S, data=.)
+```
+
+## vs hrs to collection
+
+```{r}
+p <- m_acetate %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  mutate(Concentration = if_else(Concentration > 0, Concentration, 4e-4)) %>%
+  ggplot(aes(x=hrs_to_collection, y=Concentration)) +
+  geom_point(aes(color=HostGroup)) +
+  geom_vline(xintercept=16, linetype="dashed") +
+  scale_y_log10() +
+  scale_color_manual(values = host_palette) +
+  labs(
+    y = expression(paste("Acetate concentration (", mu, "mol/ng)")), 
+    x="Hours to collection", 
+    color="", parse=TRUE) +
+  theme_bw()
+p
+ggsave("igram_actate_hrs.pdf", width=7, height=3)
+```
+
+```{r}
+m_nmr_outliers <- m_acetate %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  mutate(Concentration = if_else(Concentration > 0, Concentration, 4e-4)) %>%
+  mutate(Label = if_else(!(TimeLate | HighHost), SubjectID, ""))
+p + geom_text_repel(aes(label=Label), data=m_nmr_outliers)
+ggsave("igram_actate_hrs_labeled.png", width=7, height=3, dpi=300)
+ggsave("igram_meconium_revision_figS21C.pdf", width=7, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS21C.png", width=7, height=3, dpi=300)
+```
+
+```{r}
+m_acetate %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  count()
+```
+
+
+```{r}
+m_acetate %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  cor.test(~ Concentration + hrs_to_collection, data=., method="spearman")
+```
+

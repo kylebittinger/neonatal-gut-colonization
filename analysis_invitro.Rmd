@@ -1,0 +1,287 @@
+---
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(broom)
+library(ggsci)
+```
+
+```{r}
+lcms_product_colors <- c(Acetate = "#0099B4FF", Succinate = "#42B540FF")
+lcms_substrate_colors <- c(
+  Asparagine = "#333333",
+  `Aspartic Acid` = "#0072B5",
+  Glutamine = "#999999",
+  Lysine = "#EE4C97",
+  Proline = "#9467BD",
+  Serine = "#925E9F",
+  Threonine = "#FF7F0E")
+lcms_colors <- c(lcms_product_colors, lcms_substrate_colors, Growth="#000000")
+```
+
+## Data import
+
+```{r}
+growth_aerobic <- read_xlsx("MP1 growth curve on excel_for_Kyle.xlsx", sheet=2) %>%
+  gather(Replicate, OD, -Hours) %>%
+  mutate(Condition = "Aerobic")
+growth_anaerobic <- read_xlsx("MP1 growth curve on excel_for_Kyle.xlsx", sheet=3) %>%
+  gather(Replicate, OD, -Hours) %>%
+  mutate(Condition = "Anaerobic")
+```
+
+```{r}
+growth_aerobic_ave <- growth_aerobic %>%
+  group_by(Condition, Hours) %>%
+  summarize_at(vars(OD), funs(mean, sd)) %>%
+  ungroup()
+growth_anaerobic_ave <- growth_anaerobic %>%
+  group_by(Condition, Hours) %>%
+  summarize_at(vars(OD), funs(mean, sd)) %>%
+  ungroup()
+```
+
+```{r}
+products <- c("Acetate", "Succinate", "Acetic acid", "Propionic acid", "Butyric acid")
+# in pmol/uL
+lcms <- read_xlsx("MS Data of E Coli metabolites_for kyle.xlsx", sheet=1, skip=1) %>%
+  rename(RowID = X__1) %>%
+  mutate(Hours = suppressWarnings(readr::parse_number(RowID))) %>%
+  mutate(Hours = ifelse(is.na(Hours), 0, Hours)) %>%
+  mutate(Condition = ifelse(str_detect(RowID, "O"), "Aerobic", "Anaerobic")) %>%
+  mutate(Replicate = substr(RowID, 1, 1)) %>%
+  select(-RowID) %>%
+  gather(Metabolite, Conc, -Hours, -Condition, -Replicate) %>%
+  mutate(MetaboliteClass = ifelse(Metabolite %in% products, "Product", "Substrate"))
+# in nmol/uL
+gcms <- read_xlsx("MS Data of E Coli metabolites_for kyle.xlsx", sheet=2, skip=1) %>%
+  rename(RowID = X__1) %>%
+  mutate(Hours = suppressWarnings(readr::parse_number(RowID))) %>%
+  mutate(Hours = ifelse(is.na(Hours), 0, Hours)) %>%
+  mutate(Condition = ifelse(str_detect(RowID, "O"), "Aerobic", "Anaerobic")) %>%
+  mutate(Replicate = substr(RowID, 1, 1)) %>%
+  select(-RowID) %>%
+  gather(Metabolite, Conc, -Hours, -Condition, -Replicate) %>%
+  mutate(MetaboliteClass = ifelse(Metabolite %in% products, "Product", "Substrate"))
+```
+
+```{r}
+lcms_ave <- lcms %>%
+  group_by(Condition, Hours, Metabolite, MetaboliteClass) %>%
+  summarize_at(vars(Conc), funs(mean, sd))
+gcms_ave <- gcms %>%
+  group_by(Condition, Hours, Metabolite, MetaboliteClass) %>%
+  summarize_at(vars(Conc), funs(mean, sd))
+```
+
+## Anaerobic growth
+
+```{r}
+growth_anaerobic %>%
+  ggplot(aes(x=Hours, y=OD, group=Replicate)) +
+  geom_point() +
+  geom_line() +
+  labs(x="Time (hours)", y=expression(OD["600nm"])) +
+  theme_bw()
+```
+
+```{r}
+lcms_pctchange_anaerobic <- lcms %>%
+  filter(Condition %in% "Anaerobic") %>%
+  filter(MetaboliteClass %in% "Substrate") %>%
+  filter(Hours %in% c(0, 1, 6, 7)) %>%
+  mutate(TimePeriod = ifelse(Hours < 3, "Early", "Late")) %>%
+  group_by(Metabolite) %>%
+  do(tidy(t.test(Conc ~ TimePeriod, data=.))) %>%
+  ungroup() %>%
+  mutate(pct_change = estimate2 / estimate1) %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+lcms_pctreduced_anaerobic <- lcms_pctchange_anaerobic %>%
+  filter(pct_change < 0.75)
+```
+
+
+
+```{r}
+lcms_ave %>%
+  filter(Condition %in% "Anaerobic") %>%
+  filter(MetaboliteClass %in% "Substrate") %>%
+  inner_join(lcms_pctreduced_anaerobic, by="Metabolite") %>%
+  ggplot(aes(x=Hours, color=Metabolite)) +
+  geom_line(aes(y=mean, group=Metabolite)) +
+  #geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width=0.1) +
+  scale_color_manual(values=lcms_substrate_colors) +
+  labs(x="Time (hours)", y="Concentration (pmol/μL)", color="") +
+  theme_bw()
+```
+
+```{r}
+lcms %>%
+  filter(Condition %in% "Anaerobic") %>%
+  filter(MetaboliteClass %in% "Substrate") %>%
+  inner_join(lcms_pctreduced_anaerobic, by="Metabolite") %>%
+  ggplot(aes(x=Hours, y=Conc, color=Metabolite)) +
+  geom_line(aes(group=paste(Replicate, Metabolite))) +
+  scale_color_manual(values=lcms_substrate_colors) +
+  labs(x="Time (hours)", y="Concentration (pmol/μL)", color="") +
+  theme_bw()
+```
+
+```{r}
+lcms_ave %>%
+  filter(Condition %in% "Anaerobic") %>%
+  filter(MetaboliteClass %in% "Product") %>%
+  ggplot(aes(x=Hours, color=Metabolite)) +
+  geom_line(aes(y=mean, group=Metabolite)) +
+  #geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width=0.1) +
+  facet_grid(Metabolite ~ ., scales="free_y") +
+  scale_color_manual(values = lcms_product_colors) +
+  labs(x="Time (hours)", y="Concentration (pmol/μL)") +
+  theme_bw()
+```
+
+```{r}
+lcms %>%
+  filter(Condition %in% "Anaerobic") %>%
+  filter(MetaboliteClass %in% "Product") %>%
+  ggplot(aes(x=Hours, y=Conc, color=Metabolite)) +
+  geom_line(aes(group=paste(Replicate, Metabolite))) +
+  facet_grid(Metabolite ~ ., scales="free_y") +
+  labs(x="Time (hours)", y="Concentration (pmol/μL)") +
+  theme_bw()
+```
+
+Combined figure
+
+```{r}
+growth_anaerobic_ave %>%
+  mutate(Metabolite = "Growth", MetaboliteClass = "Growth") %>%
+  bind_rows(lcms_ave) %>%
+  filter(Condition %in% "Anaerobic") %>%
+  filter(
+    (MetaboliteClass %in% c("Growth", "Product")) | 
+      (Metabolite %in% lcms_pctreduced_anaerobic$Metabolite)) %>%
+  mutate(FacetValue = ifelse(
+    MetaboliteClass %in% "Product", Metabolite, MetaboliteClass)) %>%
+  mutate(FacetValue = fct_relevel(FacetValue, "Growth", "Acetate", "Succinate", "Substrate")) %>%
+  ggplot(aes(x=Hours, color=Metabolite)) +
+  geom_line(aes(y=mean, group=Metabolite)) +
+  #geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width=0.1) +
+  facet_grid(FacetValue ~ ., scales="free_y") +
+  scale_color_manual(values = lcms_colors) +
+  scale_x_continuous(breaks = 0:7) +
+  labs(x="Time (hours)", y="Concentration (pmol/μL)", color="") +
+  theme_bw() +
+  theme(
+    strip.background = element_blank(),
+    strip.text.y = element_blank()
+  )
+ggsave("igram_ecoli_anaerobic_combined.pdf", height=5, width=4, useDingbats=FALSE)
+```
+
+
+
+## Aerobic growth
+
+```{r}
+growth_aerobic %>%
+  ggplot(aes(x=Hours, y=OD, group=Replicate)) +
+  geom_point() +
+  geom_line() +
+  labs(x="Time (hours)", y=expression(OD["600nm"])) +
+  theme_bw()
+```
+
+```{r}
+lcms_pctchange_aerobic <- lcms %>%
+  filter((Condition %in% "Aerobic") | (Hours %in% 0)) %>%
+  filter(MetaboliteClass %in% "Substrate") %>%
+  filter(Hours %in% c(0, 1, 6, 7)) %>%
+  mutate(TimePeriod = ifelse(Hours < 3, "Early", "Late")) %>%
+  group_by(Metabolite) %>%
+  do(tidy(t.test(Conc ~ TimePeriod, data=.))) %>%
+  ungroup() %>%
+  mutate(pct_change = estimate2 / estimate1) %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+lcms_pctreduced_aerobic <- lcms_pctchange_aerobic %>%
+  filter(pct_change < 0.75)
+```
+
+
+```{r}
+lcms_ave %>%
+  filter((Condition %in% "Aerobic") | (Hours %in% 0)) %>%
+  filter(MetaboliteClass %in% "Substrate") %>%
+  inner_join(lcms_pctreduced_aerobic, by="Metabolite") %>%
+  ggplot(aes(x=Hours, color=Metabolite)) +
+  geom_line(aes(y=mean, group=Metabolite)) +
+  geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width=0.1) +
+  labs(x="Time (hours)", y="Concentration (pmol/μL)") +
+  theme_bw()
+```
+
+```{r}
+lcms %>%
+  filter((Condition %in% "Aerobic") | (Hours %in% 0)) %>%
+  filter(MetaboliteClass %in% "Substrate") %>%
+  inner_join(lcms_pctreduced_aerobic, by="Metabolite") %>%
+  ggplot(aes(x=Hours, y=Conc, color=Metabolite)) +
+  geom_line(aes(group=paste(Replicate, Metabolite))) +
+  labs(x="Time (hours)", y="Concentration (pmol/μL)") +
+  theme_bw()
+```
+
+```{r}
+lcms_ave %>%
+  filter((Condition %in% "Aerobic") | (Hours %in% 0)) %>%
+  filter(MetaboliteClass %in% "Product") %>%
+  ggplot(aes(x=Hours, color=Metabolite)) +
+  geom_line(aes(y=mean, group=Metabolite)) +
+  geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width=0.1) +
+  labs(x="Time (hours)", y="Concentration (pmol/μL)") +
+  theme_bw()
+```
+
+```{r}
+lcms %>%
+  filter((Condition %in% "Aerobic") | (Hours %in% 0)) %>%
+  filter(MetaboliteClass %in% "Product") %>%
+  ggplot(aes(x=Hours, y=Conc, color=Metabolite)) +
+  geom_line(aes(group=paste(Replicate, Metabolite))) +
+  facet_grid(Metabolite ~ ., scales="free_y") +
+  labs(x="Time (hours)", y="Concentration (pmol/μL)") +
+  theme_bw()
+```
+
+Combined figure
+
+```{r}
+growth_aerobic_ave %>%
+  mutate(Metabolite = "Growth", MetaboliteClass = "Growth") %>%
+  bind_rows(lcms_ave) %>%
+  filter((Condition %in% "Aerobic") | (Hours %in% 0)) %>%
+  filter(
+    (MetaboliteClass %in% c("Growth", "Product")) | 
+      (Metabolite %in% lcms_pctreduced_aerobic$Metabolite)) %>%
+  mutate(FacetValue = ifelse(
+    MetaboliteClass %in% "Product", Metabolite, MetaboliteClass)) %>%
+  mutate(FacetValue = fct_relevel(FacetValue, "Growth", "Acetate", "Succinate", "Substrate")) %>%
+  ggplot(aes(x=Hours, color=Metabolite)) +
+  geom_line(aes(y=mean, group=Metabolite)) +
+  #geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width=0.1) +
+  facet_grid(FacetValue ~ ., scales="free_y") +
+  scale_color_manual(values = lcms_colors) +
+  scale_x_continuous(breaks = 0:9) +
+  labs(x="Time (hours)", y="Concentration (pmol/μL)", color="") +
+  theme_bw() +
+  theme(
+    strip.background = element_blank(),
+    strip.text.y = element_blank()
+  )
+ggsave("igram_ecoli_aerobic_combined.pdf", height=5, width=4, useDingbats=FALSE)
+```

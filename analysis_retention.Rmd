@@ -1,0 +1,49 @@
+---
+title: "IGRAM_meconium_onemonth"
+author: "Kyle Bittinger"
+date: "May 18, 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggsci)
+```
+
+## Analysis from spreadsheet
+
+```{r}
+library(readxl)
+ret <- read_xlsx("igram_1mo_retention/20180124_strain_tracking.xlsx", na = "NA") %>%
+  filter(!is.na(KylesEstimate))
+ret_table <- ret %>%
+  with(table(Species, KylesEstimate))
+ret_table
+chisq.test(ret_table)
+fisher.test(ret_table)
+ret_glm <- ret %>%
+  filter(!is.na(KylesEstimate)) %>%
+  mutate(Retained = KylesEstimate %in% "Retained") %>%
+  mutate(Species = fct_relevel(Species, "E.coli")) %>%
+  glm(Retained ~ Species, data=., family="binomial")
+summary(ret_glm)
+anova(ret_glm, test = "Chisq")
+ret_colors <- rev(pal_jama()(2))
+ret %>%
+  mutate(Species = str_replace(Species, fixed("."), ". ")) %>%
+  mutate(KylesEstimate = str_replace(KylesEstimate, "etained", "etained at 1 mo.")) %>%
+  mutate(KylesEstimate = fct_relevel(KylesEstimate, "Retained at 1 mo.")) %>%
+  ggplot() +
+  geom_bar(aes(x=Species, fill=KylesEstimate), position = position_stack(reverse = TRUE)) +
+  scale_fill_manual(values = ret_colors) + 
+  coord_flip() +
+  labs(x="", y = "Number of samples", fill = "") +
+  theme_bw() +
+  theme(axis.text.y = element_text(face="italic"))
+ggsave("igram_1mo_retention_revised.pdf", width=6, height=2.1)
+```
+

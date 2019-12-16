@@ -1,0 +1,5763 @@
+---
+title: "IGRAM_Meconium"
+author: "Kyle Bittinger"
+date: "July 10, 2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  cache = TRUE)
+```
+
+# Setup
+
+## Libraries
+
+```{r message=FALSE}
+library(tidyverse)
+library(qiimer)
+library(magrittr)
+library(vegan)
+library(RColorBrewer)
+library(lme4)
+library(lmerTest)
+library(readxl)
+library(ggbeeswarm)
+library(taxonomizr)
+library(ggrepel)
+library(ggsci)
+library(broom)
+library(foreign)
+```
+
+## Color Palettes
+
+```{r}
+bf_colors <- ggsci::pal_npg()(2)
+host_palette <- c("#084081", "#41AB5D")
+delivery_palette <- c('#00A1D5', '#CD534C', "#cd87d1")
+```
+
+## Custom functions
+
+```{r}
+replace_lod <- function (x, multiplier = 0.1) {
+  xmin <- min(x, na.rm = TRUE)
+  xreplace <- xmin * multiplier
+  if_else(is.na(x), xreplace, x)
+}
+igram_subject_id_to_clinical <- function (x) {
+  if_else(is.na(x), as.character(NA), paste0("s", str_remove(x, "-2$")))
+}
+format_sample_label <- function (x) {
+  x %>%
+    str_replace("sNA\\.", "") %>%
+    str_replace("\\.NA", "") %>%
+    str_replace("NegativeControl", "Library negative control") %>%
+    str_replace("EnvironmentalBlank", "Blank swab") %>%
+    str_replace("DiaperBlank", "Diaper blank")
+}
+```
+
+# Data import
+
+```{r}
+strain_taxa <- read_csv("strain_taxa.csv")
+strains <- read_tsv("strain_counts.txt") %>%
+  mutate_at(-c(1,2), funs(ifelse(is.na(.), 0, .))) %>%
+  mutate(
+    `Klebsiella pneumoniae` = `Klebsiella pneumoniae` + 
+      `Klebsiella pneumoniae_1`) %>%
+  select(-`Klebsiella pneumoniae_1`) %>%
+  gather(Species, StrainNum, -SampleID, -Status) %>%
+  left_join(strain_taxa, by="Species") %>%
+  mutate(Species = ifelse(
+    is.na(CorrectedSpecies), Species, CorrectedSpecies)) %>%
+  mutate(Species = ifelse(
+    grepl(" ", Species), Species, paste(Species, "sp."))) %>%
+  mutate(Taxon = factor(Taxon)) %>%
+  left_join(s0_clinical, by="SampleID")
+```
+
+# Tables
+
+## Clinical info (Table 1)
+
+```{r}
+s0_clinical %>%
+  left_join(gest_age, "SubjectID") %>%
+  select(
+    `Birth weight` = IG_birthweight_z,
+    `Brirth height` = IG_birthlength_z,
+    `Gestational age` = gest_age,
+    ) %>%
+  gather(Variable, Value) %>%
+  group_by(Variable) %>%
+  summarise(Mean = mean(Value, na.rm=T), `Std.dev.`= sd(Value, na.rm=T))
+```
+
+```{r}
+s0_clinical %>%
+  left_join(gest_age, "SubjectID") %>%
+  select(
+    `Mother weight group` = igram_group,
+    `Mode of delivery` = delivery_type,
+    `Intrapartum antibiotics` = intrapartum_antibiotics,
+    ) %>%
+  gather(Variable, Value) %>%
+  count(Variable, Value)
+```
+
+```{r}
+s0_clinical %>%
+  filter(!is.na(Group16)) %>%
+  with(fisher.test(Group16, delivery_type))
+```
+
+```{r}
+s0_clinical %>%
+  filter(!is.na(Group16)) %>%
+  kruskal.test(bmiz ~ Group16, data=.)
+```
+
+```{r}
+s0_clinical %>%
+  left_join(gest_age, "SubjectID") %>%
+  filter(!is.na(Group16)) %>%
+  kruskal.test(gest_age ~ Group16, data=.)
+```
+
+```{r}
+s0_clinical %>%
+  filter(!is.na(Group16)) %>%
+  with(fisher.test(Group16, intrapartum_antibiotics))
+```
+
+```{r}
+s0_clinical %>%
+  filter(!is.na(Group16)) %>%
+  count(Group16, infant_on_antibiotics)
+```
+
+```{r}
+s0_clinical %>%
+  filter(!is.na(Group16)) %>%
+  with(fisher.test(Group16, infant_on_antibiotics))
+```
+
+```{r}
+s0_clinical %>% 
+  filter(!is.na(Group16)) %>%
+  count(Group16, collection_location)
+```
+
+```{r}
+s0_clinical %>% 
+  filter(!is.na(Group16)) %>%
+  with(fisher.test(Group16, UnexposedLabel))
+```
+
+```{r}
+s0_clinical %>% 
+  filter(!is.na(Group16)) %>%
+  with(fisher.test(Group16, feeding_in_hospital))
+```
+
+```{r}
+s1_subjs %>%
+  mutate(SubjectID = igram_subject_id_to_clinical(SubjectID)) %>%
+  left_join(select(s0_clinical, SubjectID, Group16), by="SubjectID") %>%
+  select(SubjectID, Group16, Visit, Breastfed) %>%
+  filter(!is.na(Group16)) %>%
+  with(fisher.test(Group16, Breastfed))
+```
+
+```{r}
+s0_clinical %>%
+  group_by(Group16) %>%
+kruskal.test(dna_conc ~ Group16, data=.)
+```
+
+```{r}
+s0_clinical %>%
+  left_join(gest_age, "SubjectID") %>%
+  filter(!is.na(Group16)) %>%
+  kruskal.test(HostProp ~ Group16, data=.)
+```
+
+
+```{r}
+s0_clinical %>% 
+  filter(!is.na(Group16)) %>%
+  count(Group16, collection_location) %>%
+  mutate(p = round(100 * (n / sum(n))))
+```
+
+```{r}
+s0_clinical %>%
+  filter(!is.na(Group16)) %>%
+  count(Group16, feeding_in_hospital) %>%
+  mutate(p = round(100 * (n / sum(n))))
+```
+
+```{r}
+s1_subjs %>%
+  mutate(SubjectID = igram_subject_id_to_clinical(SubjectID)) %>%
+  left_join(select(s0_clinical, SubjectID, Group16), by="SubjectID") %>%
+  select(SubjectID, Group16, Visit, Breastfed) %>%
+  filter(!is.na(Group16)) %>%
+  count(Group16, Breastfed) %>%
+  mutate(p = round(100 * (n / sum(n))))
+```
+
+```{r}
+s0_clinical %>% 
+  filter(!is.na(Group16)) %>%
+  count(Group16, infant_on_antibiotics) %>%
+  mutate(p = round(100 * (n / sum(n))))
+```
+
+```{r}
+s0_clinical %>% 
+  filter(!is.na(Group16)) %>%
+  count(Group16, Unexposed) %>%
+  mutate(p = round(100 * (n / sum(n))))
+```
+
+```{r}
+s0_clinical %>%
+  count(Unexposed)
+```
+
+```{r}
+s0_clinical %>% 
+  filter(!is.na(Group16)) %>%
+  count(Group16, igram_group) %>%
+  mutate(p = n / sum(n))
+```
+
+```{r}
+s0_clinical %>% 
+  filter(!is.na(Group16)) %>%
+  with(fisher.test(factor(Group16), factor(igram_group)))
+```
+
+```{r}
+s0_clinical %>%
+  left_join(gest_age, "SubjectID") %>%
+  group_by(Group16) %>%
+  summarize_at(vars(gest_age), funs(
+    Mean = mean(., na.rm=TRUE),
+    Min = min(., na.rm = TRUE),
+    Max = max(., na.rm = TRUE)))
+```
+
+## Seq info (Table S1)
+
+```{r}
+clinical_seq_info <- s_clinical %>%
+  select(
+    SampleID, 
+    intrapartum_antibiotics, infant_on_antibiotics)
+seq_info <- s %>%
+  filter(!(Visit %in% "4 month")) %>%
+  filter(!str_detect(SampleID, "_4mo$")) %>%
+  filter(!(SampleType %in% "MockDNA")) %>%
+  mutate(SubjectID = igram_subject_id_to_clinical(SubjectID)) %>%
+  select(-intrapartum_antibiotics, -infant_on_antibiotics) %>%
+  left_join(clinical_seq_info, by="SampleID") %>%
+  left_join(select(s0_clinical, SampleID, hrs_to_collection), by="SampleID") %>%
+  left_join(workfile, by=c("SubjectID", "Visit")) %>%
+  mutate(SampleType = fct_recode(
+    SampleType,
+    `Feces` = "STL",
+    `Blank swab` = "EnvironmentalBlank",
+    `Diaper blank` = "DiaperBlank",
+    `Library negative control` = "NegativeControl")) %>%
+  mutate(Visit = fct_relevel(Visit, "Birth", "1 month")) %>%
+  mutate(Breastfed = fct_recode(
+    Breastfed, `Formula only` = "BfForm", 
+    `Breastfeeding and formula mix` = "BfMix",
+    `Breastfeeding only` = "BfOnly")) %>%
+  mutate(feeding_1m = ifelse(
+    Visit %in% "1 month", as.character(Breastfed), NA)) %>%
+  select(
+    SampleID, 
+    SubjectID,
+    `Time point` = Visit,
+    `Sample type` = SampleType,
+    `Pre-PCR DNA concentration (ng/ul)` = dna_conc,
+    `Total read pairs` = input,
+    `Read pairs passing QC` = Total,
+    `Read pairs after host filtering` = NonHostReads,
+    `Hours to collection` = hrs_to_collection,
+    `Mode of delivery` = delivery_type,
+    `Maternal obesity` = igram_group,
+    `Intrapartum antibiotics` = intrapartum_antibiotics,
+    `Postpartum antibiotics` = infant_on_antibiotics,
+    `Gestational age` = gest_age,
+    `Infant BMI z-score` = bmiz,
+    `Location of sample collection` = collection_location,
+    `Sample hours in cooler` = time_to_ice,
+    `Feeding in hospital` = feeding_in_hospital,
+    `Day first fed formula` = first_formula_day,
+    `Feeding at 1 month` = feeding_1m
+    ) %>%
+  arrange(`Time point`, SubjectID, SampleID)
+write_excel_csv(seq_info, "igram_meconium_seq_info.csv")
+write_excel_csv(seq_info, "igram_meconium_revision_tableS1.csv")
+```
+
+```{r}
+seq_info %>%
+  count(`Sample type`)
+```
+
+
+```{r}
+seq_info %>%
+  filter(!(`Sample type` %in% "Mock DNA sample")) %>%
+  mutate(SampleLabel = ifelse(
+    `Sample type` %in% "Feces", 
+    paste0(`Sample type`, " (", `Time point`, ")"),
+    as.character(`Sample type`))) %>%
+  mutate(SampleLabel = fct_reorder(SampleLabel, `Total read pairs`)) %>%
+  rename(
+    "Before quality control" = `Total read pairs`,
+    "After host filtering" = `Read pairs after host filtering`) %>%
+  select(
+    SampleID, SampleLabel, `Sample type`, `Before quality control`, 
+    `After host filtering`) %>%
+  gather(
+    Stage, NumReads, `Before quality control`, 
+    `After host filtering`) %>%
+  mutate(Stage = fct_relevel(Stage, "Before quality control")) %>%
+  ggplot() +
+  geom_boxplot(
+    aes(y=NumReads, x=SampleLabel, fill=SampleLabel),
+    outlier.shape = 1) +
+  facet_wrap(~ Stage, ncol=1) +
+  scale_y_log10(
+    breaks=c(1e4, 1e5, 1e6, 1e7), 
+    labels=c("10k", "100k", "1M", "10M")) +
+  scale_fill_lancet(guide=FALSE) +
+  labs(fill="", x="", y="Number of read pairs") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))
+ggsave("igram_meconium_seqdepth.pdf", width=3, height=5)
+```
+
+```{r}
+s_reads <- s %>%
+  filter(!(SampleType %in% "MockDNA")) %>%
+  mutate(SampleType = fct_collapse(SampleType, NegativeControl = c(
+    "DiaperBlank", "EnvironmentalBlank", "NegativeControl"))) %>%
+  filter(!(is.na(Visit) & (SampleType %in% "STL"))) %>%
+  filter(!(Visit %in% "4 month")) %>%
+  mutate(SampleTypeVisit = paste(SampleType, Visit)) %>%
+  rename(TotalReads = input)
+```
+
+```{r}
+s_reads %>%
+  group_by(SampleTypeVisit) %>%
+  summarize_at(vars(TotalReads, NonHostReads), funs(median))
+```
+
+
+```{r}
+s_reads %>%
+  lm(log(NonHostReads) ~ SampleTypeVisit, data=.) %>%
+  summary()
+s_reads %>%
+  filter(SampleTypeVisit %in% c("NegativeControl NA", "STL Birth")) %>%
+  wilcox.test(NonHostReads ~ SampleTypeVisit, data=.)
+```
+
+## qPCR info (Table S2)
+
+```{r}
+qpcr_info_16S <- qpcr %>%
+  mutate(SubjectID = igram_subject_id_to_clinical(SubjectID)) %>%
+  select(
+    SampleID = sample_code_nautilus,
+    SubjectID, 
+    `Sample Type`,
+    `16S Ct number, replicate 1` = Ct1,
+    `16S Ct number, replicate 2` = Ct2,
+    `16S Ct number, replicate 3` = Ct3, 
+    `16S copy number per reaction well` = copy_num_per_rxn_well, 
+    `16S copy number per uL DNA` = copy_num_per_ul_DNA,
+    `16S copy number per gram feces` = copy_num_per_gram_feces)
+qpcr_info_human <- qpcr_human %>%
+  select(
+    SampleID,
+    `Beta-actin Ct number, replicate 1` = Ct1,
+    `Beta-actin Ct number, replicate 2` = Ct2,
+    `Beta-actin Ct number, replicate 3` = Ct3, 
+    `Beta-actin copy number per reaction well` = copy_num_per_rxn_well, 
+    `Beta-actin copy number per uL DNA` = copy_num_per_ul_DNA_human,
+    `Beta-actin copy number per gram feces` = copy_num_per_gram_feces_human)
+qpcr_info <- qpcr_info_16S %>%
+  full_join(qpcr_info_human, by="SampleID") %>%
+  mutate(human_est = replace_lod(`Beta-actin copy number per gram feces`)) %>%
+  mutate(bacteria_est = replace_lod(`16S copy number per gram feces`)) %>%
+  mutate(`Estimated bacteria to human DNA ratio` = (
+    (bacteria_est * 5) / (human_est * 3234))) %>%
+  mutate(`Estimated bacteria to human DNA ratio` = ifelse(
+    is.na(SubjectID), NA, `Estimated bacteria to human DNA ratio`)) %>%
+  select(-SampleID, -human_est, -bacteria_est) %>%
+  filter(!(`Sample Type` %in% "Mock DNA")) %>%
+  arrange(SubjectID, `Sample Type`)
+write_excel_csv(qpcr_info, "igram_meconium_qpcr_info.csv")
+```
+
+
+# qPCR results
+
+## Total DNA concentration
+
+```{r}
+pico_control_palette <- c(
+  #"#BC3C29", "#0072B5", 
+  "#E18727", 
+  "#20854E", "#7876B1", "#BBBBBB")
+control_dna_conc_range <- s %>%
+  filter(is.na(Visit)) %$%
+  range(dna_conc)
+s %>% 
+  filter((Visit %in% "Birth") | is.na(Visit)) %>%
+  filter(!(SampleType %in% "MockDNA")) %>%
+  mutate(SampleType = fct_relevel(SampleType, "STL", after = Inf)) %>%
+  mutate(SampleType = fct_recode(
+    SampleType,
+    "Stool" = "STL",
+    "DNA-free water" = "DNAfreewater",
+    "Blank tip" = "Extractblanktip",
+    "Empty well" = "Extractemptywell",
+    "Weighing paper" = "Extractweighingpaper",
+    "Gene block control" = "geneblock",
+    "Negative control" = "NegativeControl",
+    "Mock DNA" = "MockDNA",
+    "Diaper blank" = "DiaperBlank",
+    "Environmental blank" = "EnvironmentalBlank")) %>%
+  ggplot() +
+  geom_histogram(aes(fill=SampleType, x=dna_conc), binwidth = 0.2, boundary=0) +
+  scale_fill_manual(values = pico_control_palette) +
+  labs(
+    y = "Number of samples",
+    x = expression(paste("Total pre-PCR DNA concentration (ng/", mu, "L)")),
+    fill="", parse=T) +
+  theme_bw()
+ggsave("sampletype_dna_conc.pdf", width=5, height=2.5)
+```
+
+## 16S (bacterial DNA)
+
+Some samples did not have measurable Ct values.
+
+```{r}
+s0 %>%
+  count(SampleType, has_ct) %>%
+  spread(has_ct, n, fill=0)
+```
+
+```{r}
+control_palette <- c(
+  "#BC3C29", "#0072B5", "#E18727", 
+  "#20854E", "#BBBBBB")
+s0 %>%
+  filter(!(SampleType %in% "Gene block control")) %>%
+  mutate(CopyNum=ifelse(
+    is.na(copy_num_per_ul_DNA), 1, copy_num_per_ul_DNA)) %>%
+  mutate(SampleType = fct_relevel(SampleType, "Stool", after = Inf)) %>%
+  ggplot() +
+  geom_histogram(aes(x=CopyNum, fill=SampleType), bins=40) +
+  annotate(
+    "text", x=1.5, y=22.5, label="Below limit\nof detection", 
+    hjust=0, fontface="italic", color="#666666", size=3) +
+  scale_x_log10(
+    breaks=c(10, 1e3, 1e5, 1e7),
+    labels=c("10", "1k", "100k", "10M")) +
+  scale_fill_manual(values=control_palette) +
+  #scale_fill_nejm() +
+  coord_fixed(1/4.8) +
+    labs(
+    y = "Number of samples",
+    x = expression(paste("16S copy number per ", mu, "L extracted DNA")),
+    fill="", parse=T) +
+  theme_bw()
+ggsave("igram_meconium_qpcr_histogram.pdf", width=4.5, height=2.5, useDingbats=F)
+ggsave("igram_meconium_figS6B.pdf", width=4.5, height=2.5, useDingbats=F)
+ggsave("igram_meconium_revision_figS11A.pdf", width=4.5, height=2.5, useDingbats=F)
+ggsave("igram_meconium_revision_figS11A.png", width=4.5, height=2.5, dpi=300)
+```
+
+
+```{r}
+max_neg_copies <- s0 %>%
+  filter(SampleType %in% "Blank tip") %>%
+  with(max(copy_num_per_well_DNA))
+max_neg_copies
+```
+
+```{r}
+s0 %>%
+  filter(SampleType %in% "Stool") %>%
+  mutate(AboveNeg = copy_num_per_well_DNA > max_neg_copies) %>%
+  count(AboveNeg) %>%
+  mutate(freq = n / sum(n))
+```
+
+
+```{r warning=FALSE}
+s0 %>% 
+  filter(SampleType %in% "Stool") %>%
+  mutate(HighHost = HostProp > 0.75) %>%
+  mutate(CopyNum = ifelse(
+    is.na(copy_num_per_gram_feces), 50, copy_num_per_gram_feces)) %>%
+  mutate(CopyNumLabel = ifelse(
+    is.na(copy_num_per_gram_feces), "Not obtained", "")) %>%
+  ggplot(aes(x=HostProp, color=HighHost)) +
+  geom_hline(yintercept=50, linetype="dashed", color="#666666") +
+  geom_point(aes(y=CopyNum)) + 
+  scale_y_log10(
+    breaks=10**c(3,5,7,9), 
+    labels=parse(text=c("10^3", "10^5", "10^7", "10^9"))) +
+  scale_x_continuous(labels=scales::percent) +
+  scale_color_manual(values = host_palette, guide=FALSE) +
+  #scale_color_manual(values=c("#204087", "#999999"), guide=FALSE) +
+  labs(x="Human DNA, percent of total reads", y="16S copy number\nper gram feces", color="") +
+  theme_bw()
+ggsave("igram_meconium_qpcr_scatter.pdf", width=4, height=3, useDingbats=F)
+ggsave("igram_meconium_figS6C.pdf", width=3.5, height=2.7, useDingbats=F)
+ggsave("igram_meconium_revision_figS11B.pdf", width=3.5, height=2.7, useDingbats=F)
+ggsave("igram_meconium_revision_figS11B.png", width=3.5, height=2.7, dpi=300)
+```
+
+
+
+```{r}
+s0 %>% 
+  mutate(copy_num_per_gram_feces = ifelse(
+    is.na(copy_num_per_gram_feces), 50, copy_num_per_gram_feces)) %>%
+  filter(SampleType %in% "Stool") %>%
+  cor.test(~ copy_num_per_gram_feces + HostProp, method="spearman", data=.)
+```
+
+```{r}
+s0 %>% 
+  filter(SampleType %in% "Stool") %>%
+  count(SampleType)
+```
+
+
+```{r}
+s0 %>% 
+  filter(SampleType %in% "Stool", is.na(copy_num_per_gram_feces)) %>% 
+  ggplot() +
+  geom_histogram(aes(x=HostProp))
+```
+
+```{r}
+s0 %>%
+  filter(!is.na(HostProp)) %>%
+  filter(is.na(copy_num_per_gram_feces)) %>%
+  count(HostProp > 0.75)
+prop.test(23, 26)
+```
+
+If we 16S qPCR, is the qPCR estimate higher for samples with low host DNA? YES
+
+```{r}
+s0_mosthost <- s0 %>% 
+  filter(SampleType %in% "Stool") %>%
+  mutate(HostLevel = ifelse(
+    HostProp > 0.75, "High\nhost DNA", "Low\nhost DNA")) %>%
+  filter(!is.na(copy_num_per_gram_feces))
+s0_mosthost %>%
+  wilcox.test(copy_num_per_gram_feces ~ HostLevel, data=.)
+```
+
+```{r}
+s0_mosthost %>%
+  ggplot() +
+  geom_beeswarm(aes(x=HostLevel, y=copy_num_per_gram_feces), cex=3.5) +
+  scale_y_log10() +
+  labs(x="", y="16S copy number\nper gram feces") +
+  theme_bw()
+ggsave("igram_meconium_qpcr_beeswarm.pdf", width=3, height=2.5, useDingbats=F)
+```
+
+## Beta-actin (human DNA)
+
+Is the level of beta-actin qPCR correlated with the percentage of human DNA? YES, but not as much as 16S qPCR.
+
+```{r}
+s0 %>%
+mutate(copy_num_per_gram_feces_human = ifelse(
+    is.na(copy_num_per_gram_feces_human), 50, copy_num_per_gram_feces_human)) %>%
+    filter(SampleType %in% "Stool") %>%
+  cor.test(~ copy_num_per_gram_feces_human + HostProp, method="spearman", data=.)
+```
+
+
+```{r}
+s0 %>% 
+  filter(SampleType %in% "Stool") %>%
+  mutate(HighHost = HostProp > 0.75) %>%
+  mutate(CopyNum = ifelse(
+    is.na(copy_num_per_gram_feces_human), 50, copy_num_per_gram_feces_human)) %>%
+  mutate(CopyNumLabel = ifelse(
+    is.na(copy_num_per_gram_feces_human), "Not obtained", "")) %>%
+  ggplot(aes(x=HostProp, color=HighHost)) +
+  geom_hline(yintercept=50, linetype="dashed", color="#666666") +
+  geom_point(aes(y=CopyNum)) + 
+  scale_y_log10(
+    breaks=10**c(3,5,7,9), 
+    labels=parse(text=c("10^3", "10^5", "10^7", "10^9"))) +
+  scale_x_continuous(labels=scales::percent) +
+  scale_color_manual(values = host_palette, guide=FALSE) +
+  #scale_color_manual(values=c("#204087", "#999999"), guide=FALSE) +
+  labs(
+    x="Human DNA, percent of total reads", 
+    y="Beta-actin copy number\nper gram feces", color="") +
+  theme_bw()
+ggsave("igram_meconium_revision_figS11C.pdf", width=3.5, height=2.7, useDingbats=F)
+ggsave("igram_meconium_revision_figS11C.png", width=3.5, height=2.7, dpi=300)
+```
+
+## Ratio of absolute DNA
+
+Is the ratio of human-to-bacterial DNA by qPCR correlated with the percentage of human DNA in sequencing? YES, higher correlation than 16S or beta-actin qPCR individually.
+
+```{r}
+s0 %>% 
+  filter(SampleType %in% "Stool") %>%
+  filter(
+    !is.na(copy_num_per_gram_feces),
+    !is.na(copy_num_per_gram_feces_human)) %>%
+  mutate(dna_ratio = (
+    (copy_num_per_gram_feces_human * 3234) / (copy_num_per_gram_feces * 5)
+  )) %>%
+  cor.test(~ dna_ratio + HostProp, method="spearman", data=.)
+```
+
+```{r}
+s0 %>% 
+  filter(SampleType %in% "Stool") %>%
+  filter(
+    !is.na(copy_num_per_gram_feces),
+    !is.na(copy_num_per_gram_feces_human))
+```
+
+
+```{r}
+s0_ratio <- s0_clinical %>% 
+  filter(SampleType %in% "Stool") %>%
+  mutate_at(
+    vars(copy_num_per_gram_feces, copy_num_per_gram_feces_human), 
+    funs(replace_lod)) %>%
+  filter(
+    !is.na(copy_num_per_gram_feces),
+    !is.na(copy_num_per_gram_feces_human)) %>%
+  mutate(dna_ratio = (
+    (copy_num_per_gram_feces * 5) / (copy_num_per_gram_feces_human * 3234)
+  )) %>%
+  mutate(HighHost = HostProp > 0.75) %>%
+  mutate(SubjectID = paste0("s", study_id)) %>%
+  mutate(SubjectLabel = if_else(
+    ((dna_ratio < 1/8) & !HighHost) | ((dna_ratio > 1) & HighHost), 
+    SubjectID, "")) 
+s0_ratio %>%
+  ggplot(aes(x=HostProp, y=dna_ratio)) +
+  geom_smooth(method="lm", color="black", size=0.7, ) +
+  geom_hline(yintercept=1, linetype="dashed") +
+  geom_point(aes(color=HostGroup)) + 
+  geom_text_repel(aes(label=SubjectLabel)) +
+  scale_y_log10(
+    breaks = 10 ^ seq(-6, 6, 2), 
+    labels=scales::trans_format('log10',scales::math_format(10^.x))) +
+  scale_x_continuous(labels=scales::percent) +
+  scale_color_manual(values = host_palette, guide=F) +
+  labs(
+    x="Human DNA, percent of total reads", 
+    y="Bacteria-to-human DNA ratio\nby qPCR", 
+    color="") +
+  theme_bw()
+ggsave("igram_qpcr_gene_ratio.pdf", width=6.5, height=2.7)
+ggsave("igram_meconium_revision_figS11D.pdf", width=5, height=4, useDingbats=F)
+ggsave("igram_meconium_revision_figS11D.png", width=5, height=4, dpi=300)
+```
+
+## Summary heatmap
+
+```{r}
+s0_qpcr <- s0 %>% 
+  mutate_at(
+    vars(copy_num_per_gram_feces, copy_num_per_gram_feces_human), 
+    funs(replace_lod)) %>%
+  mutate(dna_ratio = (
+    (copy_num_per_gram_feces * 5) / (copy_num_per_gram_feces_human * 3234)
+  )) %>%
+  left_join(
+    select(s0_clinical, SampleID, hrs_to_collection), 
+    by="SampleID") %>%
+  mutate(SampleID = if_else(is.na(SampleID), sample_code, SampleID)) %>%
+  filter(!(SampleType %in% "Gene block control")) %>%
+  arrange(hrs_to_collection, sample_code) %>%
+  select(
+    SampleID, 
+    `Bacteria:human ratio` = dna_ratio,
+    `16S` = copy_num_per_ul_DNA,
+    `Beta-actin` = copy_num_per_ul_DNA_human) %>%
+  mutate_at(-1, funs(log10))
+```
+
+```{r}
+qpcr_summary_annot <- s0_qpcr %>%
+  select(1, 2) %>%
+  as.data.frame() %>%
+  column_to_rownames("SampleID")
+```
+
+```{r}
+qpcr_summary_mat <- s0_qpcr %>%
+  select(-2) %>%
+  as.data.frame() %>%
+  column_to_rownames("SampleID") %>%
+  as.matrix()
+```
+
+```{r}
+pheatmap::pheatmap(
+  qpcr_summary_mat,
+  color=colorRampPalette(brewer.pal(5, "Oranges"), bias=1)(50),
+  annotation_row = qpcr_summary_annot,
+  cluster_rows = F, cluster_cols = F,
+  filename = "igram_meconium_revision_figS26_qpcr.pdf",
+  cellwidth = 10, cellheight = 10)
+```
+
+
+
+# Hours from birth
+
+```{r}
+s0_clinical %>%
+  filter(!is.na(copy_num_per_gram_feces)) %>%
+  arrange(desc(copy_num_per_gram_feces)) %>%
+  select(SampleType, copy_num_per_gram_feces, hrs_to_collection)
+```
+
+```{r}
+s0_clinical %>%
+  count(delivery_type_binary)
+```
+
+```{r}
+# Minutes after birth
+min(s0_clinical$hrs_to_collection, na.rm = T) * 60
+max(s0_clinical$hrs_to_collection, na.rm = T)
+```
+
+```{r}
+s0_clinical %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  ggplot() +
+  geom_histogram(aes(x=hrs_to_collection)) +
+  labs(y="Number of samples", x="Time of collection after birth (hours)") +
+  theme_bw()
+ggsave("igram_meconium_hrs_to_collection_histogram.pdf", width = 3.6, height=2.3)
+```
+
+
+```{r}
+s0_clinical %>%
+  mutate(CopyNum = ifelse(
+    is.na(copy_num_per_gram_feces), 50, copy_num_per_gram_feces)) %>%
+  mutate(CopyNumLabel = ifelse(
+    is.na(copy_num_per_gram_feces), "Not obtained", "")) %>%
+  ggplot(aes(x=hrs_to_collection)) +
+  geom_vline(xintercept=16, linetype="dashed") +
+  geom_point(aes(y=CopyNum, color=CopyNumLabel)) + 
+  scale_y_log10(breaks=10**c(3,5,7,9)) +
+  scale_color_manual(values=c("#204087", "#999999"), guide=FALSE) +
+  labs(x="Hours to collection", y="16S copy number\nper gram feces", color="") +
+  theme_bw()
+ggsave("igram_meconium_qpcr_hours.pdf", width=5, height=3, useDingbats=F)
+```
+
+## Human DNA
+
+```{r}
+s0_clinical %>%
+  filter(!is.na(TimeGroup)) %>%
+  ggplot() +
+  geom_histogram(
+    aes(x=HostProp, fill=HostGroup), 
+    binwidth = 0.05, boundary = 0.05) +
+  geom_vline(xintercept=0.75, linetype="dashed", color="#666666") +
+  facet_grid(~ TimeGroup) +
+  scale_fill_manual(values=host_palette, guide=FALSE) +
+  scale_x_continuous(labels=scales::percent) +
+  labs(
+    x="Human DNA, percent of total reads", 
+    y="Number of infant fecal samples") +
+  theme_bw() +
+  theme(panel.spacing.x = unit(0.5, "cm"))
+ggsave("host_prop_histogram.pdf", width=4.5, height=2.7)
+ggsave("igram_meconium_figS6A.pdf", width=5, height=2.7)
+```
+
+### Bimodal distribution
+
+```{r}
+library(mixtools)
+s0_clinical_gmm <- s0_clinical %>%
+  filter(!is.na(HostProp))
+m <- normalmixEM(
+  s0_clinical_gmm$HostProp,
+  k = 2, mu = c(0.01, 0.99), sigma = .01)
+summary(m)
+```
+
+```{r}
+s0_clinical %>%
+  filter(!is.na(HostProp))
+```
+
+
+```{r}
+m_diff_sq <- function (x) {
+  m_diff <- dnorm(x, mean = m$mu[1], sd = m$sigma[1]) - 
+    dnorm(x, mean = m$mu[2], sd = m$sigma[2])
+  m_diff ^ 2
+}
+optim(list(x=0.5), m_diff_sq)
+```
+
+
+
+```{r}
+gmm_dist <- function(xs, m, k) {
+  m$lambda[k] * dnorm(xs, mean = m$mu[k], m$sigma[k])
+}
+s0_clinical_gmm_pred <- data_frame(HostProp=seq(0, 1, 0.01)) %>%
+  mutate(comp.1 = gmm_dist(HostProp, m, 1)) %>%
+  mutate(comp.2 = gmm_dist(HostProp, m, 2)) %>%
+  gather(Component, Probability, starts_with("comp")) %>%
+  mutate(PredictedDensity = nrow(s0_clinical_gmm) * Probability * 0.1)
+
+s0_clinical_gmm %>%
+  cbind(m$posterior) %>%
+  mutate(Component = if_else(comp.1 > 0.5, "comp.1", "comp.2")) %>%
+  ggplot(aes(x=HostProp)) +
+  geom_histogram(aes(fill=Component), binwidth = .01, boundary=0) +
+  geom_line(
+    aes(y=PredictedDensity, color=Component), 
+    data=s0_clinical_gmm_pred) +
+  geom_vline(xintercept=0.55, linetype="dashed", color="#666666") +
+  scale_color_manual(values=host_palette) +
+    scale_fill_manual(values=host_palette) +
+  labs(x="Fraction of human reads", y="Number of samples") +
+  theme_bw()
+ggsave("igram_meconium_revision_figS9A.pdf", width=5, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS9A.png", width=5, height=3, dpi=300)
+```
+
+Test 1 vs, 2 components by bootstrapping
+
+```{r message=FALSE, eval=FALSE}
+sink("boot_messages.txt")
+mboot <- boot.comp(
+  s0_clinical_gmm$HostProp, B=1000,
+  max.comp=1, mix.type = "normalmix", sigma = .01)
+sink()
+```
+
+```{r eval=FALSE}
+mboot$obs.log.lik
+mboot$p.values
+```
+
+```{r eval=FALSE}
+data_frame(GmmLogLik = mboot$log.lik[[1]]) %>%
+  ggplot() +
+  geom_histogram(aes(x=GmmLogLik), binwidth = 2, boundary=0) +
+  geom_vline(xintercept = mboot$obs.log.lik, linetype="dashed") +
+  annotate(
+    "text", x=15, y=100, 
+    label="Bootstrap\nsimulation\nvalues", hjust=0) +
+  annotate(
+    "text", x=118, y=200, 
+    label="Observed value: 120.4\nP < 0.001", hjust=1) +
+  labs(x="Gaussian mixture model for human DNA distribution:\nlog-likelihood") +
+  theme_bw()
+ggsave("igram_meconium_gmm_bootstrap.pdf", width=5, height=3)
+```
+
+### ROC Analysis
+
+Classifying everyone in high human group
+
+```{r}
+count_host_group <- function (bp) {
+  s0_clinical %>%
+    filter(!is.na(hrs_to_collection)) %>%
+    mutate(BeforeBreak = hrs_to_collection < bp) %>%
+    count(HighHost, BeforeBreak)
+}
+roc_df <- data_frame(Breakpoint = seq(0, 173)) %>%
+  group_by(Breakpoint) %>%
+  do(count_host_group(.$Breakpoint)) %>%
+  ungroup() %>%
+  complete(Breakpoint, HighHost, BeforeBreak) %>%
+  mutate(n = replace_na(n, 0)) %>%
+  arrange(Breakpoint, BeforeBreak, HighHost) %>%
+  mutate(Class = paste("Bef", BeforeBreak, "Host", HighHost)) %>%
+  select(Breakpoint, Class, n) %>%
+  spread(Class, n) %>%
+  mutate(TP = `Bef TRUE Host TRUE`) %>%
+  mutate(P = `Bef TRUE Host TRUE` + `Bef FALSE Host TRUE`) %>%
+  mutate(FP = `Bef TRUE Host FALSE`) %>%
+  mutate(N = `Bef TRUE Host FALSE` + `Bef FALSE Host FALSE`) %>%
+  mutate(TPR = TP / P, FPR = FP / N)
+```
+
+```{r}
+roc_16 <- roc_df %>%
+  filter(Breakpoint %in% c(16, 42))
+roc_coinflip <- data_frame(FPR = seq(0, 1, 0.01)) %>%
+  mutate(TPR = FPR)
+roc_df %>%
+  ggplot(aes(x=FPR, y=TPR)) +
+  geom_step() +
+  geom_line(data=roc_coinflip, linetype="dashed") +
+  geom_point(data=roc_16) +
+  annotate("text", x=0.6, y=0.05, label="AUC = 0.83", hjust=0, vjust=0) +
+  annotate("text", x=0.1, y=0.6, label="16h", hjust=0, vjust=1) +
+  annotate("text", x=0.67, y=0.98, label="42h", hjust=0, vjust=1) +
+  coord_equal() +
+  theme_bw()
+ggsave("igram_meconium_roc.pdf", width=3, height = 3)
+ggsave("igram_meconium_revision_figS10D.pdf", width=3, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS10D.png", width=3, height=3, dpi=300)
+```
+
+```{r}
+library(pROC)
+s0_hrs <- s0_clinical %>%
+  filter(!is.na(hrs_to_collection))
+roc_hrs <- roc(HighHost ~ hrs_to_collection, data=s0_hrs)
+plot(roc_hrs)
+auc(roc_hrs)
+```
+
+### Plot human DNA
+
+```{r}
+s0_clinical %>%
+  ggplot(aes(x=hrs_to_collection, y=HostProp)) +
+  geom_point(aes(color=HostGroup)) + 
+  scale_color_manual(values=host_palette, guide=FALSE) +
+  scale_y_continuous(labels=scales::percent) +
+  geom_vline(xintercept=16, linetype="dashed") +
+  annotate("text", x=16, y=0.68, angle=90, label="16 hours", vjust=-0.5) +
+  labs(x="Hours to collection", y="Human DNA, percent of total reads") +
+  theme_bw()
+ggsave("igram_meconium_hostprop_hours.pdf", width=5, height=3, useDingbats=F)
+ggsave("igram_meconium_fig1B.pdf", width=5, height=3, useDingbats=F)
+ggsave(
+  "igram_meconium_poster_hostprop.png", 
+  width = 3, height = 3, dpi=600)
+```
+
+### Correlation
+
+```{r}
+s0_clinical %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  cor.test(~ HostProp + hrs_to_collection, data=., method="spearman")
+```
+
+### LM segmented
+
+"In follow-up analysis, we determined that the slope of human-associated DNA fraction was not constant with respect to time since birth, and would be better modeled with two slopes: one for early time points, and one for later time points"
+
+```{r warning=FALSE}
+s0_hrs <- s0_clinical %>%
+  filter(!is.na(hrs_to_collection))
+s0_hrs %>%
+  ggplot(aes(x=hrs_to_collection, y=HostProp)) +
+  geom_point(aes(color=HostGroup)) + 
+  geom_smooth(method="lm", color="#333333", size=0.7) +
+  scale_color_manual(values=host_palette, guide=FALSE) +
+  scale_y_continuous(labels=scales::percent, limits=c(0, 1)) +
+  labs(x="Hours to collection", y="Human DNA, percent of total reads") +
+  theme_bw()
+ggsave("igram_meconium_revision_figS10B_left.pdf", width=5, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS10B_left.png", width=5, height=3, dpi=300)
+```
+
+```{r}
+full_fit_lm <- s0_hrs %>%
+  filter(hrs_to_collection < 100) %>%
+  lm(HostProp ~ hrs_to_collection, data=.)
+full_se_residual_lm <- sqrt(deviance(full_fit_lm) / df.residual(full_fit_lm))
+summary(full_fit_lm)
+```
+
+```{r}
+human_dna_with_breakpoint_lm <- function (bp) {
+  df <- s0_hrs %>%
+    filter(hrs_to_collection < 100)
+  df_pre <- df %>% filter(hrs_to_collection < bp)
+  df_post <- df %>% filter(hrs_to_collection >= bp)
+  lm_pre <- lm(HostProp ~ hrs_to_collection, data=df_pre)
+  lm_post <- lm(HostProp ~ hrs_to_collection, data=df_post)
+  list(Pre=lm_pre, Post=lm_post)
+}
+human_dna_segmented_resid_se_lm <- function (bp) {
+  models <- human_dna_with_breakpoint_lm(bp)
+  resid_vals <- c(residuals(models$Pre), residuals(models$Post))
+  df_resid <- df.residual(models$Pre) + df.residual(models$Post)
+  sqrt(sum(resid_vals ^ 2) / df_resid)
+}
+human_dna_segmented_fits_lm <- data_frame(Breakpoint = seq(10, 25, by=0.2)) %>%
+  mutate(ResidualSe = sapply(Breakpoint, human_dna_segmented_resid_se_lm))
+human_dna_segmented_fits_lm %>%
+  ggplot() +
+  geom_point(aes(x=Breakpoint, y=ResidualSe)) +
+  geom_hline(yintercept = full_se_residual_lm, linetype="dashed") +
+  labs(
+    x = "Segmented regression breakpoint", 
+    y = "Residual standard error\n(Linear regression)") +
+  theme_bw()
+ggsave("igram_meconium_segreg_diagnostic.pdf", width=5, height=3)
+ggsave("igram_meconium_revision_figS10B_middle.pdf", width=5, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS10B_middle.png", width=5, height=3, dpi=300)
+```
+
+```{r}
+s0_pre16 <- s0_hrs %>%
+  filter(hrs_to_collection < 16)
+s0_pre16 %>%
+  lm(HostProp ~ hrs_to_collection, data=.) %>%
+  summary()
+```
+
+```{r}
+s0_post16 <- s0_hrs %>%
+  filter(hrs_to_collection >= 16, hrs_to_collection < 100)
+s0_post16 %>%
+  lm(HostProp ~ hrs_to_collection, data=.) %>%
+  summary()
+```
+
+```{r}
+s0_hrs %>%
+  ggplot(aes(x=hrs_to_collection, y=HostProp)) +
+  geom_point(aes(color=HostGroup)) + 
+  geom_smooth(
+    method="lm", data=s0_pre16, se = FALSE, formula = "y ~ 1", 
+    color="#666666", size=0.7) +
+  geom_smooth(
+    method="lm", data=s0_post16, se = FALSE, 
+    color="#666666", size=0.7) +
+  geom_vline(xintercept=16, linetype="dashed", color="#666666") +
+  scale_color_manual(values=host_palette, guide=FALSE) +
+  scale_y_continuous(labels=scales::percent, limits=c(0, 1)) +
+  labs(x="Hours to collection", y="Human DNA, percent of total reads") +
+  theme_bw()
+ggsave("igram_meconium_revision_figS10B_right.pdf", width=5, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS10B_right.png", width=5, height=3, dpi=300)
+```
+
+
+### GLM segmented
+
+```{r}
+s0_hrs %>%
+  mutate(HighHost = as.numeric(HighHost)) %>%
+  ggplot(aes(x=hrs_to_collection, y=HighHost)) + 
+  geom_point(aes(color=HostGroup), shape=1) + 
+  geom_smooth(
+    method="glm", method.args=list(family="binomial"), se=TRUE,
+    color="#333333", size=0.7) +
+  scale_color_manual(values = host_palette, guide=F) +
+  labs(
+    y="High host DNA (1=True, 0=False)", 
+    x="Hours to collection", 
+    color="") +
+  theme_bw()
+ggsave("igram_meconium_revision_figS10A_left.pdf", width=5, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS10A_left.png", width=5, height=3, dpi=300)
+```
+
+```{r}
+full_fit <- s0_hrs %>%
+  mutate(HighHost = as.numeric(HighHost)) %>%
+  glm(HighHost ~ hrs_to_collection, family="binomial", data=.)
+summary(full_fit)
+full_se_residual <- sqrt(deviance(full_fit) / df.residual(full_fit))
+full_se_residual
+```
+
+```{r}
+human_dna_with_breakpoint <- function (bp) {
+  df <- s0_hrs %>%
+    mutate(HighHost = as.numeric(HighHost))
+  df_pre <- df %>% filter(hrs_to_collection < bp)
+  df_post <- df %>% filter(hrs_to_collection >= bp)
+  lm_pre <- glm(HighHost ~ hrs_to_collection, family="binomial", data=df_pre)
+  lm_post <- glm(HighHost ~ hrs_to_collection, family="binomial", data=df_post)
+  list(Pre=lm_pre, Post=lm_post)
+}
+human_dna_segmented_resid_se <- function (bp) {
+  models <- human_dna_with_breakpoint(bp)
+  resid_vals <- c(residuals(models$Pre), residuals(models$Post))
+  df_resid <- df.residual(models$Pre) + df.residual(models$Post)
+  sqrt(sum(resid_vals ^ 2) / df_resid)
+}
+human_dna_segmented_fits <- data_frame(Breakpoint = seq(10, 25, by=0.2)) %>%
+  mutate(ResidualSe = sapply(Breakpoint, human_dna_segmented_resid_se))
+human_dna_segmented_fits %>%
+  ggplot() +
+  geom_point(aes(x=Breakpoint, y=ResidualSe)) +
+  geom_hline(yintercept = full_se_residual, linetype="dashed") +
+  labs(
+    x = "Breakpoint, hours to collection", 
+    y = "Residual standard error\n(Logistic regression)") +
+  theme_bw()
+ggsave("igram_meconium_segreg_diagnostic_glm.pdf", width=5, height=3)
+ggsave("igram_meconium_revision_figS10A_middle.pdf", width=5, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS10A_middle.png", width=5, height=3, dpi=300)
+```
+
+```{r}
+s0_pre <- s0_hrs %>%
+  filter(hrs_to_collection < 16)
+fit_pre_slope <- s0_pre %>%
+  mutate(HighHost = as.numeric(HighHost)) %>%
+  glm(HighHost ~ hrs_to_collection, family="binomial", data=.)
+fit_pre_const <- s0_pre %>%
+  mutate(HighHost = as.numeric(HighHost)) %>%
+  glm(HighHost ~ 1, family="binomial", data=.)
+summary(fit_pre_slope)
+summary(fit_pre_const)
+anova(fit_pre_slope, fit_pre_const, test = "Chisq")
+```
+
+```{r}
+s0_post <- s0_hrs %>%
+  filter(hrs_to_collection >= 16)
+fit_post_slope <- s0_post %>%
+  mutate(HighHost = as.numeric(HighHost)) %>%
+  glm(HighHost ~ hrs_to_collection, family="binomial", data=.)
+fit_post_const <- s0_hrs %>%
+  filter(hrs_to_collection >= 16) %>%
+  mutate(HighHost = as.numeric(HighHost)) %>%
+  glm(HighHost ~ 1, family="binomial", data=.)
+summary(fit_post_slope)
+summary(fit_post_const)
+anova(fit_post_slope, fit_post_const, test = "Chisq")
+```
+
+```{r}
+s0_post_fit <- data_frame(hrs_to_collection = seq(16, 173, 0.5)) %>%
+  mutate(GlmProb = predict(fit_post_slope, ., type="response"))
+s0_pre_fit <- data_frame(hrs_to_collection = seq(0, 16, 0.5)) %>%
+  mutate(GlmProb = predict(fit_pre_const, ., type="response"))
+s0_clinical %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  ggplot(aes(x=hrs_to_collection)) +
+  geom_line(aes(y=GlmProb), data=s0_post_fit, color="#999999") +
+  geom_line(aes(y=GlmProb), data=s0_pre_fit, color="#999999") +
+  geom_point(aes(y=HostProp, color=HostGroup)) + 
+  geom_vline(xintercept=16, linetype="dashed") +
+  annotate("text", x=14, y=0.51, angle=90, hjust=0, vjust=0, label="16 hours") +
+  scale_color_manual(values=host_palette, guide=FALSE) +
+  scale_y_continuous(labels=scales::percent, limits=c(0, 1)) +
+  labs(x="Hours to collection", y="Human DNA, percent of total reads") +
+  theme_bw()
+ggsave("igram_meconium_fig1B_revision.pdf", width=5, height=3, useDingbats=F)
+```
+
+Figure 1B data
+
+```{r}
+s0_clinical %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  count(SampleType)
+```
+
+
+```{r}
+BIC(full_fit)
+BIC(fit_post_slope)
+BIC(fit_pre_const)
+```
+
+
+```{r}
+s0_hrs %>%
+  mutate(HighHost = as.numeric(HighHost)) %>%
+  ggplot(aes(x=hrs_to_collection)) + 
+  geom_point(aes(color=HostGroup, y=HighHost), shape=1) + 
+  geom_line(aes(y=GlmProb), data=s0_post_fit, color="#666666") +
+  geom_line(aes(y=GlmProb), data=s0_pre_fit, color="#666666") +
+  geom_vline(xintercept=16, linetype="dashed", color="#666666") +
+  scale_color_manual(values = host_palette, guide=F) +
+  labs(
+    y="High host DNA (1=True, 0=False)", 
+    x="Hours to collection", 
+    color="") +
+  theme_bw()
+
+ggsave("igram_meconium_revision_figS10A_right.pdf", width=5, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS10A_right.png", width=5, height=3, dpi=300)
+```
+
+
+### LM with segmented package
+
+Adding a constraint that the fits are continuous at the breakpoint, we arrive at a smaller estimate for the breakpoint: 
+
+```{r}
+s0_hrs_bp <- s0_clinical %>%
+  filter(!is.na(hrs_to_collection), hrs_to_collection < 100)
+human_dna_lm <- lm(HostProp ~ hrs_to_collection, data=s0_hrs_bp) 
+human_dna_lm %>% summary()
+```
+
+```{r}
+library(segmented)
+davies.test(human_dna_lm, ~ hrs_to_collection)
+segmented_fit <- segmented(human_dna_lm, ~ hrs_to_collection, psi=16)
+summary(segmented_fit)
+```
+
+```{r}
+plot(segmented_fit, ylim=c(0, 1))
+points(x=s0_hrs$hrs_to_collection, y=s0_hrs$HostProp)
+```
+
+```{r}
+segmented_pred_df <- data_frame(hrs_to_collection = seq(0, 70, 0.1)) %>%
+  mutate(HostProp = predict(
+    segmented_fit, 
+    data_frame(hrs_to_collection=hrs_to_collection)))
+s0_hrs %>%
+  ggplot(aes(x=hrs_to_collection, y=HostProp)) +
+  geom_point(aes(color=HostGroup)) + 
+  geom_line(data=segmented_pred_df) +
+  geom_vline(xintercept=16, linetype="dashed", color="#666666") +
+  scale_color_manual(values=host_palette, guide=FALSE) +
+  scale_y_continuous(labels=scales::percent, limits=c(0, 1)) +
+  labs(x="Hours to collection", y="Human DNA, percent of total reads") +
+  theme_bw()
+ggsave("igram_meconium_revision_figS10C.pdf", width=5, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS10C.png", width=5, height=3, dpi=300)
+```
+
+
+
+
+
+```{r}
+s0_clinical %>%
+  count(Group16)
+```
+
+## qPCR
+
+```{r}
+p <- s0_clinical %>%
+  mutate(NonHostProp = 1 - HostProp) %>%
+  mutate(CopyNum = ifelse(
+    is.na(copy_num_per_gram_feces), 50, copy_num_per_gram_feces)) %>%
+  mutate(BelowLod = ifelse(
+    is.na(copy_num_per_gram_feces), "Below limit\nof detection", "")) %>%
+  ggplot(aes(
+    x = hrs_to_collection, 
+    y = CopyNum, 
+    color = HostGroup)) +
+  geom_point() + 
+  geom_vline(xintercept=16, linetype="dashed") +
+  annotate("text", x=16, y=1e9, angle=90, label="16 hours", vjust=-0.5) +
+  scale_y_log10(
+    breaks=c(1e3, 1e5, 1e7, 1e9),
+    labels=parse(text=c("10^3", "10^5", "10^7", "10^9"))) +
+  scale_color_manual(values = host_palette) +
+  scale_shape_manual(values=c(16, 1)) +
+  labs(
+    x = "Hours to collection", 
+    y = "16S copy number\nper gram feces", 
+    color = "", shape = "") +
+  theme_bw()
+p
+ggsave("igram_meconium_qpcr_hours_human.pdf", width=6.5, height=3, useDingbats=F)
+ggsave("igram_meconium_fig1C.pdf", width=6.5, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS12A.pdf", width=6.5, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS12A.png", width=6.5, height=3, dpi=300)
+```
+
+```{r}
+s0_clinical %>%
+  mutate(CopyNum = ifelse(
+    is.na(copy_num_per_gram_feces), 50, copy_num_per_gram_feces)) %>%
+  cor.test(~ hrs_to_collection + CopyNum, data=., method="spearman")
+```
+```{r}
+s0_clinical %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  count(SampleType)
+```
+
+
+Now analyze per ug of extracted DNA
+
+```{r}
+p <- s0_clinical %>%
+  mutate(NonHostProp = 1 - HostProp) %>%
+  mutate(CopyNum = ifelse(
+    is.na(copy_num_per_ul_DNA), 1, copy_num_per_ul_DNA)) %>%
+  mutate(BelowLod = ifelse(
+    is.na(copy_num_per_gram_feces), "Below limit\nof detection", "")) %>%
+  ggplot(aes(
+    x = hrs_to_collection, 
+    y = CopyNum, 
+    color = HostGroup)) +
+  geom_point() + 
+  geom_vline(xintercept=16, linetype="dashed") +
+  #annotate("text", x=16, y=1e9, angle=90, label="16 hours", vjust=-0.5) +
+  scale_y_log10(
+    breaks=c(10, 1000, 100000, 10000000),
+    labels=c("10", "1k", "100k", "10M")) +
+  scale_color_manual(values = host_palette) +
+  scale_shape_manual(values=c(16, 1)) +
+  labs(
+    x = "Hours to collection", 
+    y = expression(paste("16S copy number per ", mu, "L extracted DNA")),
+    color = "", shape = "", parse=T) +
+  theme_bw()
+p
+ggsave("igram_meconium_qpcrug_hours_human.pdf", width=6.5, height=3, useDingbats=F)
+ggsave("igram_meconium_figS6E.pdf", width=6.5, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS12B.pdf", width=6.5, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS12B.png", width=6.5, height=3, dpi=300)
+
+```
+
+
+
+```{r}
+p +
+  labs(
+    x = "Hours to collection", 
+    y = "16S copy number / g feces", 
+    color = "", shape = "") +
+  theme(
+    legend.position = c(0.65, 0.25), 
+    legend.background = element_rect(
+      color = "black", size = 0.3),
+    legend.title = element_blank())
+ggsave(
+  "igram_meconium_poster_16Sqpcr.png", 
+  width = 3, height = 3, dpi=600)
+```
+
+```{r}
+s0_clinical %>%
+  mutate(CopyNum = ifelse(
+    is.na(copy_num_per_ul_DNA), 1, copy_num_per_ul_DNA)) %>%
+  cor.test(~ hrs_to_collection + CopyNum, data=., method="spearman")
+```
+
+
+```{r}
+s0_ratio %>%
+  ggplot(aes(x=hrs_to_collection, y=dna_ratio)) +
+  #geom_smooth(method="lm", data=filter(s0_ratio, hrs_to_collection < 100)) +
+  #geom_hline(yintercept=1, color="#999999") +
+  geom_vline(xintercept=16, linetype="dashed") +
+  geom_point(aes(color=HostGroup)) + 
+  annotate("text", x=14, y=2e2, label="16 hours", angle=90, hjust=0, vjust=0) +
+  scale_y_log10(
+    breaks = 10 ^ seq(-6, 6, 2), 
+    labels=scales::trans_format('log10',scales::math_format(10^.x))) +
+  scale_color_manual(values = host_palette) +
+  labs(
+    x="Hours to collection", 
+    y="Bacteria-to-human DNA ratio\nby qPCR", 
+    color="") +
+  theme_bw()
+ggsave("igram_meconium_fig1C_revision_alt.pdf", width=6.5, height=3, useDingbats=F)
+```
+
+```{r}
+s0_ratio %>%
+  cor.test(~ dna_ratio + hrs_to_collection, data=., method="spearman")
+```
+
+```{r}
+s0_ratio_lm <- s0_ratio %>%
+  lm(log10(dna_ratio) ~ hrs_to_collection, data=.) 
+s0_ratio_lm %>%
+  summary()
+s0_ratio_lm$coefficients["hrs_to_collection"] * 24
+```
+
+
+```{r}
+s0_ratio_med <- s0_ratio %>% 
+  filter(!is.na(Group16)) %>%
+  group_by(Group16) %>%
+  summarize(MedRatio = median(dna_ratio))
+s0_ratio %>%
+  filter(!is.na(Group16)) %>%
+  mutate(SubjectLabel = if_else(
+    (dna_ratio > 1) & (HostProp > 0.55),
+    SubjectID, "")) %>%
+  ggplot(aes(y=dna_ratio, x=hrs_to_collection)) +
+  geom_hline(
+    aes(yintercept=MedRatio), 
+    linetype="dashed",
+    data=s0_ratio_med) +
+  geom_point(aes(color=HostGroup)) + 
+  geom_text_repel(aes(label=SubjectLabel)) +
+  #geom_smooth(method="lm", formula="y ~ 1") +
+  scale_y_log10(
+    breaks = 10 ^ seq(-6, 6, 2), 
+    labels=scales::trans_format('log10',scales::math_format(10^.x))) +
+  scale_color_manual(values = host_palette, guide=FALSE) +
+  scale_shape_manual(values=c(16, 1)) +
+  facet_wrap(~ Group16, scale="free_x") +
+  labs(
+    x="Hours to collection", 
+    y="Bacteria-to-human DNA ratio\nby qPCR", 
+    color="Host DNA fraction") +
+  theme_bw()
+ggsave("igram_meconium_ratio_16hours_human.pdf", width=6.5, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS12C.pdf", width=6.5, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS12C.png", width=6.5, height=3, dpi=300)
+```
+
+```{r}
+s0_ratio %>%
+  filter(!is.na(TimeGroup)) %>%
+  ggplot(aes(x=TimeGroup, y=dna_ratio)) +
+  geom_boxplot(aes(fill=TimeGroup)) +
+  ggpubr::stat_compare_means(comparisons = list(c(1,2))) +
+  scale_fill_manual(values = host_palette, guide=FALSE) +
+  scale_y_log10(
+    breaks = 10 ^ seq(-6, 6, 2), 
+    labels=scales::trans_format('log10',scales::math_format(10^.x)),
+    expand=c(0.1, 0)) +
+  labs(x="", y="Bacteria-to-human DNA ratio\nby qPCR") +
+  theme_bw()
+ggsave("igram_meconium_revision_figS12D.pdf", width=3, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS12D.png", width=3, height=3, dpi=300)
+```
+
+
+```{r}
+s0_ratio %>%
+  wilcox.test(log(dna_ratio) ~ TimeGroup, data=.)
+s0_ratio %>%
+  count(TimeGroup)
+s0_ratio %>%
+  filter(!is.na(TimeGroup)) %>%
+  mutate(PosGroup = ifelse(
+    (TimeGroup == "After 16h") & (HostGroup == "human DNA < 75%"), 
+    "After 16h human DNA < 75%", "Others")) %>%
+  wilcox.test(log(dna_ratio) ~ PosGroup, data=.)
+s0_ratio %>%
+  filter(!is.na(TimeGroup)) %>%
+  mutate(PosGroup = ifelse(
+    (TimeGroup == "After 16h") & (HostGroup == "human DNA < 75%"), 
+    "After 16h human DNA < 75%", "Others")) %>%
+  count(PosGroup)
+s0_ratio %>%
+  lm(log(dna_ratio) ~ Group16, data=.) %>%
+  summary()
+s0_ratio %>%
+  filter(TimeGroup %in% "After 16h") %>%
+  wilcox.test(log(dna_ratio) ~ HostGroup, data=.)
+s0_ratio %>%
+  wilcox.test(log(dna_ratio) ~ TimeGroup, data=.)
+s0_ratio %>%
+  count(TimeGroup)
+```
+
+
+
+```{r}
+s0_clinical_16h <- s0_clinical %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  mutate(CopyNum = ifelse(
+    is.na(copy_num_per_gram_feces), 50, copy_num_per_gram_feces)) %>%
+  mutate(CopyNumUL = ifelse(
+    is.na(copy_num_per_ul_DNA), 50, copy_num_per_ul_DNA))
+levels(s0_clinical_16h$Group16) <- str_replace(
+  levels(s0_clinical_16h$Group16), ", ", "\n")
+
+s0_clinical_medians <- s0_clinical_16h %>% 
+  filter(!is.na(copy_num_per_gram_feces)) %>%
+  group_by(Group16) %>%
+  summarize(Med16S = median(copy_num_per_gram_feces))
+s0_clinical_16h %>%
+  ggplot(aes(x=hrs_to_collection)) +
+  geom_hline(
+    aes(yintercept=Med16S), 
+    linetype="dashed",
+    data=s0_clinical_medians) +
+  geom_point(aes(y=CopyNum, color=HostGroup)) + 
+  scale_y_log10(
+    breaks=c(1e3, 1e5, 1e7, 1e9),
+    labels=parse(text=c("10^3", "10^5", "10^7", "10^9"))) +  scale_color_manual(values = host_palette, guide=FALSE) +
+  scale_shape_manual(values=c(16, 1)) +
+  facet_wrap(~ Group16, scale="free_x") +
+  labs(
+    x="Hours to collection", 
+    y="16S copy number\nper gram feces", 
+    color="Host DNA fraction") +
+  theme_bw()
+ggsave("igram_meconium_qpcr_16hours_human.pdf", width=6.5, height=3, useDingbats=F)
+ggsave("igram_meconium_figS6D.pdf", width=6.5, height=3, useDingbats=F)
+
+```
+
+```{r}
+s0_clinical_16h %>%
+  t.test(log(CopyNum) ~ TimeGroup, data=.)
+s0_clinical_16h %>%
+  lm(log(CopyNum) ~ Group16, data=.) %>%
+  summary()
+s0_clinical_16h %>%
+  filter(TimeGroup %in% "After 16h") %>%
+  wilcox.test(log(CopyNum) ~ HostGroup, data=.)
+```
+
+Double check per uL extracted DNA
+```{r}
+s0_clinical_16h %>%
+  t.test(log(CopyNumUL) ~ TimeGroup, data=.)
+s0_clinical_16h %>%
+  lm(log(CopyNumUL) ~ Group16, data=.) %>%
+  summary()
+s0_clinical_16h %>%
+  filter(TimeGroup %in% "After 16h") %>%
+  wilcox.test(log(CopyNumUL) ~ HostGroup, data=.)
+```
+
+
+```{r}
+s0_clinical %>%
+  mutate(CopyNum = ifelse(
+    is.na(copy_num_per_gram_feces), 50, copy_num_per_gram_feces)) %>%
+  mutate(CopyNumLabel = ifelse(
+    is.na(copy_num_per_gram_feces), "Not obtained", "")) %>%
+  ggplot(aes(x=hrs_to_collection)) +
+  geom_point(aes(y=CopyNum, color=HostProp)) + 
+  scale_y_log10(breaks=10**c(3,5,7,9)) +
+  scale_color_continuous(limits=c(0,1)) +
+  facet_wrap(~ delivery_type_binary) +
+  labs(
+    x="Hours to collection", 
+    y="16S copy number\nper gram feces", 
+    color="Host DNA fraction") +
+  theme_bw()
+ggsave("igram_meconium_qpcr_hours_human_deliv.pdf", width=6.5, height=3, useDingbats=F)
+```
+
+
+```{r}
+s0_clinical_select <- s0_clinical %>%
+  filter(hrs_to_collection < 100) %>%
+  filter(!is.na(copy_num_per_gram_feces))
+s0_clinical_select %>%
+  lm(log10(copy_num_per_gram_feces) ~ hrs_to_collection, data=.) %>%
+  summary()
+```
+
+```{r}
+s0_clinical %>%
+  mutate(CopyNum = ifelse(
+    is.na(copy_num_per_gram_feces), 50, copy_num_per_gram_feces)) %>%
+  mutate(CopyNumLabel = ifelse(
+    is.na(copy_num_per_gram_feces), "Not obtained", "")) %>%
+  ggplot(aes(x=hrs_to_collection)) +
+  geom_smooth(
+    aes(y=copy_num_per_gram_feces), data=s0_clinical_select, method="lm") +
+  geom_point(aes(y=CopyNum, color=CopyNumLabel)) + 
+  scale_y_log10(breaks=10**c(3,5,7,9)) +
+  scale_color_manual(values=c("#204087", "#999999"), guide=FALSE) +
+  labs(x="Hours to collection", y="16S copy number\nper gram feces", color="") +
+  theme_bw()
+ggsave("igram_meconium_qpcr_hours_line.pdf", width=5, height=3, useDingbats=F)
+```
+
+Does the probability of detecting a qPCR signal increase with time to collection? NO
+
+```{r}
+s0_clinical_logit <- s0_clinical %>%
+  mutate(Has16S = !is.na(copy_num_per_gram_feces))
+s0_clinical_logit %>% xtabs(~ Has16S, data=.) 
+s0_clinical_logit %>%
+  glm(Has16S ~ hrs_to_collection, data=., family="binomial") %>%
+  summary()
+s0_clinical_logit %>%
+  glm(Has16S ~ log10(hrs_to_collection) + delivery_type, data=., family="binomial") %>%
+  summary()
+s0_clinical_logit %>%
+  wilcox.test(hrs_to_collection ~ Has16S, data=.)
+```
+
+```{r}
+s0_clinical_logit %>%
+  ggplot(aes(y=hrs_to_collection)) +
+  geom_beeswarm(aes(x=Has16S, color=Has16S), cex=3) + 
+  scale_color_manual(values=c("#999999", "#204087"), guide=FALSE) +
+  labs(y="Hours to collection", x="16S rRNA gene amplification", color="") +
+  coord_flip() +
+  theme_bw()
+ggsave("igram_meconium_qpcr_hours_logit.pdf", width=5, height=3, useDingbats=F)
+```
+
+## Number of reads
+
+```{r}
+s0_clinical %>%
+  ggplot(aes(x=hrs_to_collection, y=InputReads)) +
+  geom_point(aes(color=HostGroup)) + 
+  scale_color_manual(values=host_palette, guide=FALSE) +
+  geom_vline(xintercept=16, linetype="dashed") +
+  annotate("text", x=16, y=7e4, angle=90, label="16 hours", vjust=-0.5) +
+  scale_y_log10() +
+  labs(x="Hours to collection", y="Total sequence reads") +
+  theme_bw()
+```
+
+```{r}
+s0_clinical %>%
+  cor.test(~ hrs_to_collection + InputReads, data=., method="spearman")
+```
+
+
+```{r}
+s0_clinical %>%
+  ggplot(aes(x=hrs_to_collection, y=NonHostReads)) +
+  geom_point(aes(color=HostGroup)) + 
+  scale_color_manual(values=host_palette, guide=FALSE) +
+  geom_vline(xintercept=16, linetype="dashed") +
+  annotate("text", x=16, y=7e6, angle=90, label="16 hours", vjust=-0.5) +
+  scale_y_log10() +
+  labs(x="Hours to collection", y="Non-host reads") +
+  theme_bw()
+```
+
+```{r}
+s0_clinical %>%
+  cor.test(~ hrs_to_collection + NonHostReads, data=., method="spearman")
+```
+
+## Mode of delivery
+
+Is the level of host DNA reduced sooner in SVD vs. C-section babies? YES
+
+```{r}
+s0_host_deliv <- s0_clinical %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  mutate(After16h = hrs_to_collection > 16) %>%
+  mutate(HighHost = HostProp > 0.75)
+
+s0_host_deliv %>%
+  count(HighHost, After16h, delivery_type_binary)
+```
+
+
+```{r}
+m_hrs <- s0_host_deliv %>%
+  glm(HighHost ~ hrs_to_collection, data=., family = "binomial")
+summary(m_hrs)
+  
+m_intonly <- s0_host_deliv %>%
+  glm(
+    HighHost ~ hrs_to_collection + delivery_type_binary:hrs_to_collection, 
+    data=., family = "binomial") 
+summary(m_intonly)
+
+m_full <- s0_host_deliv %>%
+  glm(
+    HighHost ~ delivery_type_binary * hrs_to_collection, 
+    data=., family = "binomial")
+summary(m_full)
+
+anova(m_full, m_hrs, test="Chisq")
+```
+
+```{r}
+m_labor <- s0_host_deliv %>%
+  mutate(Labor = str_detect(delivery_type, "with labor")) %>%
+  glm(
+    HighHost ~ hrs_to_collection * delivery_type_binary + Labor, 
+    data=., family = "binomial")
+anova(m_full, m_labor, test="Chisq")
+```
+
+
+```{r}
+s0_clinical %>%
+  mutate(HighHost = as.numeric(HighHost)) %>%
+  ggplot(aes(
+    x=hrs_to_collection, 
+    y=HighHost, 
+    color=delivery_type_binary)) + 
+  geom_point(shape=1) + 
+  stat_smooth(
+    method="glm", method.args=list(family="binomial"), se=T,
+    size=0.7) +
+  scale_color_manual(values=delivery_palette) +
+  labs(
+    y="High host DNA (1=True, 0=False)", 
+    x="Hours to collection", 
+    color="Delivery type") +
+  theme_bw()
+ggsave("igram_meconium_revision_figS9B.pdf", width=6, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS9B.png", width=6, height=3, dpi=300)
+```
+
+# MetaPhlAn results
+
+```{r message=FALSE}
+mp <- read_tsv("data_igram_run1/taxonomic_assignments.tsv")
+colnames(mp) <- sub("PCMP_", "", colnames(mp))
+colnames(mp) <- sub("1-4d", "1.4d", colnames(mp))
+
+mp_taxa <- split_assignments(mp$Term, split = "\\|") %>% 
+  mutate_all(funs(sub("[kpcofgs]__", "", .))) %>%
+  mutate(Species = sub("_", " ", Species))
+mp <- as.matrix(mp[,-1])
+
+mp_assignment <- mp_taxa$Species %>%
+  ifelse(is.na(.), "No assignments", .) %>%
+  str_replace("unclassified", "(unclassified)") %>%
+  str_replace("noname_", "")
+mp_assignment2 <- simplify_assignments(mp_taxa, rank2="Species")
+rownames(mp) <- mp_assignment
+```
+
+```{r}
+mp_tidy <- mp %>%
+  as.data.frame() %>%
+  cbind(mp_taxa, .) %>%
+  rownames_to_column("Assignment") %>%
+  gather(SampleID, PctAbundance, -c(1:8)) %>%
+  mutate(Abundance = PctAbundance / 100)
+```
+
+```{r}
+shannon_diversity <- function (x, base=exp(1)) {
+  if (sum(x) == 0) {
+    warning("Shannon diversity not defined for zero total counts")
+    return(NA)
+  }
+  # Remove zero values; they produce NaN's in the log function
+  x <- x[x > 0]
+  p <- x / sum(x)
+  -sum(p * log(p, base=base))
+}
+mp_richness <- mp_tidy %>%
+  filter(Kingdom %in% "Bacteria") %>%
+  group_by(SampleID) %>%
+  summarize(
+    Richness = sum(PctAbundance > 0), 
+    Shannon = shannon_diversity(PctAbundance)) %>%
+  ungroup()
+
+write_csv(mp_richness, "igram_meconium_richness.csv")
+```
+
+## Hours from birth
+
+```{r}
+s0_clinical_hrs <- s0_clinical %>%
+  filter(Visit %in% "Birth") %>%
+  filter(!is.na(hrs_to_collection))
+```
+
+### Alpha diversity
+
+```{r}
+mp_richness %>% 
+  right_join(s0_clinical_hrs, by="SampleID") %>% 
+  ggplot() + 
+  geom_point(aes(x=hrs_to_collection, y=Richness)) +
+  theme_bw()
+```
+
+```{r}
+mp_richness %>% 
+  right_join(s0_clinical_hrs, by="SampleID") %>% 
+  cor.test(~ Richness + hrs_to_collection, data=., method="spearman")
+```
+
+### Differential abundance
+
+```{r}
+mp_taxa_hrs <- mp_tidy %>%
+  right_join(s0_clinical_hrs, by="SampleID") %>%
+  group_by(Assignment) %>%
+  filter(sum(Abundance > 0) > 3) %>%
+  ungroup() %>%
+  group_by(Assignment) %>%
+  do(tidy(cor.test(
+    ~ Abundance + hrs_to_collection, data=., method="spearman"))) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+```
+
+```{r}
+mp_taxa_hrs_sig <- mp_taxa_hrs %>%
+  filter(fdr < 0.05)
+```
+
+```{r}
+mp_taxa_hrs %>%
+  filter(fdr < 0.1) %>%
+  left_join(mp_tidy, by="Assignment") %>%
+  right_join(s0_clinical_hrs, by="SampleID") %>%
+  mutate(Detected = if_else(Abundance > 0, "Detected", "Undetected")) %>%
+  mutate(Abundance = if_else(Abundance == 0, 1e-7, Abundance)) %>%
+  mutate(TaxonLabel = paste0(Assignment, " (q=", round(fdr, 3), ")")) %>%
+  mutate(TaxonLabel = str_replace_all(TaxonLabel, " ", "\n")) %>%
+  mutate(TaxonLabel = str_replace_all(TaxonLabel, "_", "-")) %>%
+  ggplot(aes(x=hrs_to_collection, y=Abundance, color=Phylum)) +
+  geom_point(aes(shape=Detected)) +
+  geom_hline(yintercept = 1e-7, linetype="dashed") +
+  scale_y_log10() +
+  scale_color_aaas() +
+  scale_shape_manual(values = c(19, 1)) +
+  facet_wrap(~ TaxonLabel) +
+  labs(shape="", x="Hours to collection", y="Abundance (MetaPhlAn2)") +
+  theme_bw()
+ggsave("igram_meconium_mp_birth_hrs.pdf", width=9, height=7)
+```
+
+
+
+## Compare visits
+
+### Alpha diversity
+
+
+
+```{r}
+mp_richness %>%
+  right_join(s01, by="SampleID") %>% 
+  ggplot(aes(x=Visit, y=Richness)) +
+  geom_boxplot(aes(fill=Visit)) +
+  labs(x="", y="Number of bacterial taxa") +
+  scale_fill_d3(guide=FALSE) +
+  theme_bw()
+ggsave("igram_meconium_figS2A.pdf", width = 2, height = 3)
+ggsave("igram_meconium_revision_figS2A.pdf", width = 2, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS2A.png", width = 2, height = 3, dpi=300)
+
+```
+
+```{r}
+mp_richness %>%
+  right_join(s01, by="SampleID") %>% 
+  count(Visit)
+```
+
+
+```{r}
+mp_richness %>%  
+  right_join(s01, by="SampleID") %>% 
+  ggplot() +
+  geom_line(aes(x=Visit, y=Richness, group=SubjectID)) +
+  labs(x="", y="Number of species\n(MetaPhlAn2)") +
+  theme_bw()
+```
+
+```{r}
+mp_richness %>%
+  right_join(s01, by="SampleID") %>% 
+  select(SubjectID, Visit, Richness) %>%
+  spread(Visit, Richness) %>%
+  arrange(Birth) %>%
+  with(wilcox.test(`Birth`, `1 month`, paired = TRUE))
+mp_richness %>%
+  right_join(s01, by="SampleID") %>% 
+  lmer(Richness ~ Visit + (1|SubjectID), data=.) %>%
+  summary()
+```
+
+### Beta diversity
+
+Remove samples with no assignments from beta diversity analysis
+
+```{r}
+s01_beta <- s01 %>%
+  left_join(mp_tidy, by="SampleID") %>%
+  filter(Abundance > 0) %>%
+  mutate(UnassignedTaxa = Assignment %in% "No assignments") %>%
+  group_by(SampleID) %>%
+  summarize(SumUnassigned = sum(Abundance[UnassignedTaxa])) %>%
+  filter(SumUnassigned == 0) %>%
+  left_join(s01)
+```
+
+
+```{r}
+mp_beta <- t(mp[,s01_beta$SampleID])
+mp_bray <- vegdist(mp_beta)
+pc <- ape::pcoa(mp_bray)
+pc_pct <- round(pc$values$Relative_eig * 100)
+s01_beta %>%
+  cbind(pc$vectors[s01_beta$SampleID, 1:3]) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2)) +
+  geom_point(aes(color=Visit)) +
+  scale_color_d3() +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Bray-Curtis distance\nbetween samples (MetaPhlAn2)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+#ggsave("igram_meconium_figS2B.pdf", width = 5, height = 3.4)
+#ggsave("igram_meconium_revision_figS2B.pdf", width = 5, height = 3.4)
+```
+
+```{r}
+s01_beta %>% count(Visit)
+```
+
+
+```{r}
+adonis(mp_bray ~ Visit, data=s01_beta, strata = s01_beta$SubjectID)
+```
+
+
+```{r}
+mp_beta <- t(mp[,s01_beta$SampleID])
+mp_jacc <- dist(mp_beta, method = "binary")
+pc <- ape::pcoa(mp_jacc)
+p <- s01_beta %>%
+  cbind(pc$vectors[s01_beta$SampleID, 1:3]) %>%
+  ggplot() +
+  geom_point(aes(x=Axis.1, y=Axis.2, color=Visit)) +
+
+  scale_color_d3() +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)"))
+p +
+  ggtitle("Jaccard distance") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("igram_meconium_figS2B.pdf", width = 5, height = 3.4)
+ggsave("igram_meconium_revision_figS2B.pdf", width = 5, height = 3.4, useDingbats=F)
+ggsave("igram_meconium_revision_figS2B.png", width = 5, height = 3.4, dpi=300)
+```
+
+```{r}
+p + 
+  theme_minimal() +
+  theme(
+    axis.title = element_blank(), 
+    axis.text = element_blank(), 
+    panel.grid = element_blank())
+ggsave("igram_birth_1mo_jaccard_pres.png", width = 5, height = 3.4, dpi=300)
+```
+
+
+```{r}
+adonis(mp_jacc ~ Visit, data=s01_beta, strata = s01_beta$SubjectID)
+```
+
+
+### Differential presence/absence
+
+```{r}
+mp_01_tests <- mp_tidy %>%
+  right_join(s01, by="SampleID") %>%
+  group_by(Assignment) %>%
+  filter(mean(Abundance > 0) > 0.25) %>%
+  select(SubjectID, Visit, Assignment, Abundance) %>%
+  spread(Visit, Abundance) %>%
+  do(with(., tidy(wilcox.test(`Birth`, `1 month`, paired = TRUE)))) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method = "fdr"))
+```
+
+```{r}
+mp_01_presence_tests <- mp_tidy %>%
+  right_join(s01, by="SampleID") %>%
+  mutate(Present = Abundance > 0) %>%
+  group_by(Assignment) %>%
+  filter(max(Abundance) > 0.1) %>%
+  do(with(., tidy(fisher.test(table(Present, Visit))))) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+```
+
+
+```{r}
+mp_tidy %>%
+  right_join(s01, by="SampleID") %>%
+  right_join(mp_01_presence_tests, by="Assignment") %>%
+  mutate(Assignment = str_remove(Assignment, "bacterium_")) %>%
+  filter(fdr < 0.05) %>%
+  group_by(Assignment, Visit) %>%
+  summarize(FracPresent = mean(Abundance > 0)) %>%
+  ungroup() %>%
+  mutate(Assignment = fct_reorder(Assignment, FracPresent, `[`, 2)) %>%
+  ggplot(aes(x=Assignment, color=Visit)) +
+  geom_point(aes(y=FracPresent)) +
+  scale_color_d3() +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  coord_flip() +
+  labs(y="Fraction of samples present") +
+  theme_bw() +
+  theme(
+    axis.title.y = element_blank(), 
+    legend.title = element_blank())
+ggsave("igram_meconium_figS2D.pdf", height = 6, width = 7)
+ggsave("igram_meconium_revision_figS2D.pdf", height = 6, width = 6, useDingbats=F)
+ggsave("igram_meconium_revision_figS2D.png", height = 6, width = 6, dpi=300)
+```
+
+```{r}
+mp_tidy %>%
+  right_join(s01, by="SampleID") %>%
+  count(Assignment, Visit) %>%
+  pivot_wider(Assignment, names_from = Visit, values_from = n)
+```
+
+
+## Mode of delivery
+
+### Alpha diversity
+
+```{r}
+mp_richness %>%
+  right_join(s01, by="SampleID") %>% 
+  ggplot(aes(x=delivery_type_binary, y=Richness, fill=delivery_type_binary)) +
+  geom_boxplot() +
+  ggpubr::stat_compare_means(comparisons = list(c(1,2))) +
+  facet_grid(~ Visit) +
+  scale_y_continuous(expand = c(0.1, 0)) +
+  scale_fill_manual(values = delivery_palette, guide=FALSE) +
+  labs(x="", y="Number of bacterial species") +
+  theme_bw() +
+  theme(strip.background = element_blank())
+ggsave("igram_meconium_revision_figS4A.pdf", width = 5, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS4A.png", width = 5, height = 3, dpi=300)
+```
+
+```{r}
+mp_richness %>%
+  right_join(s01, by="SampleID") %>% 
+  group_by(Visit) %>%
+  do(tidy(wilcox.test(Richness ~ delivery_type_binary, data=.)))
+mp_richness %>%
+  right_join(s01, by="SampleID") %>% 
+  group_by(Visit) %>%
+  do(tidy(wilcox.test(Shannon ~ delivery_type_binary, data=.)))
+```
+
+```{r}
+mp_richness %>%
+  right_join(s01, by="SampleID") %>% 
+  count(Visit, delivery_type_binary)
+```
+
+
+### Beta diversity
+
+#### Birth
+
+```{r}
+df_to_matrix <- function (df, as_rowname, as_colname, as_value) {
+  df %>%
+    select_(as_rowname, as_colname, as_value) %>%
+    spread(as_colname, as_value) %>%
+    as.data.frame() %>%
+    column_to_rownames(as_rowname) %>%
+    as.matrix()
+}
+subjs_no_assignments <- paste0(c(142, 265, 287, 130, 186, 305, 262), "-2")
+s0_subjs <- s01 %>%
+  filter(Visit %in% "Birth") %>%
+  filter(!(SubjectID %in% subjs_no_assignments))
+birth_mp <- mp_tidy %>%
+  right_join(s0_subjs, by="SampleID") %>%
+  df_to_matrix("SampleID", "Assignment", "Abundance")
+birth_mp <- birth_mp[s0_subjs$SampleID,]
+birth_bray <- vegdist(birth_mp)
+pc <- ape::pcoa(birth_bray)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s0_subjs, pc$vectors[s0_subjs$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=delivery_type_binary)) +
+  geom_point() +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Bray-Curtis distance\nbetween birth samples (MetaPhlAn2)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+adonis(birth_bray ~ delivery_type_binary, data=s0_subjs)
+```
+
+```{r}
+birth_jacc <- dist(birth_mp, method = "binary")
+pc <- ape::pcoa(birth_jacc)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s0_subjs, pc$vectors[s0_subjs$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=delivery_type_binary)) +
+  geom_point() +
+  scale_color_manual(values = delivery_palette) +
+  annotate(
+    "text", x=-0.4, y=-0.4, label="P = 0.15",
+    hjust=0, vjust=0.6) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Jaccard distance\nbirth samples") +
+  coord_equal() +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("igram_meconium_revision_figS4B_left.pdf", width=4, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS4B_left.png", width=4, height=3, dpi=300)
+
+```
+
+```{r}
+adonis(birth_jacc ~ delivery_type_binary, data=s0_subjs)
+```
+
+#### 1 Month
+
+```{r}
+
+month_mp <- mp_tidy %>%
+  right_join(s1_subjs, by="SampleID") %>%
+  df_to_matrix("SampleID", "Assignment", "Abundance")
+month_mp <- month_mp[s1_subjs$SampleID,]
+month_bray <- vegdist(month_mp)
+pc <- ape::pcoa(month_bray)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s1_subjs, pc$vectors[s1_subjs$SampleID,]) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=delivery_type_binary)) +
+  geom_point() +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Bray-Curtis distance\nbetween 1 month samples (MetaPhlAn2)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+adonis(month_bray ~ delivery_type_binary, data=s1_subjs)
+```
+
+```{r}
+month_jacc <- dist(month_mp, method = "binary")
+pc <- ape::pcoa(month_jacc)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s1_subjs, pc$vectors[s1_subjs$SampleID,]) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=delivery_type_binary)) +
+  geom_point() +
+  annotate(
+    "text", x=0.16, y=0.25, label="P = 0.007",
+    hjust=0, vjust=0.6) +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Jaccard distance\n1 month samples") +
+  coord_equal() +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("igram_meconium_revision_figS4B_right.pdf", width=4, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS4B_right.png", width=4, height=3, dpi=300)
+```
+
+```{r}
+adonis(month_jacc ~ delivery_type_binary, data=s1_subjs)
+```
+
+### Differential abundance
+
+```{r}
+delivery_mode_tests <- mp_tidy %>%
+  right_join(s01, by="SampleID") %>%
+  group_by(Assignment) %>%
+  filter(mean(Abundance > 0) > 0.2) %>%
+  ungroup() %>%
+  group_by(Assignment, Visit) %>%
+  do(tidy(wilcox.test(Abundance ~ delivery_type_binary, data=.))) %>%
+  ungroup() %>%
+  group_by(Visit) %>%
+  mutate(fdr = p.adjust(p.value, method = "fdr")) %>%
+  ungroup()
+```
+
+```{r}
+mp_tidy %>%
+  right_join(s01, by="SampleID") %>%
+  group_by(Assignment) %>%
+  filter(mean(Abundance > 0) > 0.2) %>%
+  ungroup() %>%
+  count(Assignment, Visit, delivery_type_binary) %>%
+  pivot_wider(names_from = delivery_type_binary, values_from = n)
+```
+
+
+```{r}
+delivery_mode_pres_tests <- mp_tidy %>%
+  right_join(s01, by="SampleID") %>%
+  mutate(Present = Abundance > 0) %>%
+  group_by(Assignment, Visit) %>%
+  filter(mean(Present) > 0.1, mean(Present < 0.9)) %>%
+  ungroup() %>%
+  group_by(Assignment, Visit) %>%
+  do(tidy(fisher.test(table(.$Present, .$delivery_type_binary)))) %>%
+  ungroup() %>%
+  group_by(Visit) %>%
+  mutate(fdr = p.adjust(p.value, method = "fdr")) %>%
+  ungroup()
+```
+
+```{r}
+delivery_mode_pres_labels <- delivery_mode_pres_tests %>%
+  filter(fdr < 0.2) %>%
+  mutate(FdrLabel = paste("P =", round(fdr, 3)))
+mp_tidy %>%
+  right_join(s01, by="SampleID") %>%
+  right_join(delivery_mode_pres_tests, by=c("Assignment", "Visit")) %>%
+  filter(fdr < 0.2) %>%
+  mutate(Present = Abundance > 0) %>%
+  group_by(Assignment, Visit) %>%
+  filter(mean(Present) > 0.1, mean(Present < 0.9)) %>%
+  ungroup() %>%
+  group_by(Assignment, Visit, delivery_type_binary) %>%
+  summarize(FracPresent = mean(Present)) %>%
+  ungroup() %>%
+  ggplot() +
+  geom_point(aes(x=Assignment, y=FracPresent, color=delivery_type_binary)) +
+  geom_text(
+    aes(x=Assignment, y=0.75, label=FdrLabel),
+    hjust=0, size=3, color="#666666",
+    data=delivery_mode_pres_labels) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  scale_color_manual(values = delivery_palette) +
+  coord_flip() +
+  labs(x="", y="Fraction of samples present", color="") +
+  theme_bw()
+ggsave("igram_meconium_revision_figS4C.pdf", width=6, height=1, useDingbats=F)
+ggsave("igram_meconium_revision_figS4C.png", width=6, height=1, dpi=300)
+```
+
+```{r}
+library(ZIBR)
+test_igram_zibr <- function (df) {
+  x <- df %>% 
+    select(delivery_type_binary) %>%
+    mutate(delivery_type_binary = as.numeric(delivery_type_binary))
+  y <- df$Abundance * 0.999
+  subject.ind <- df$SubjectID
+  time.ind <- df$Visit
+  res <- zibr(
+    logistic.cov = x, beta.cov = x, Y = y,
+    subject.ind = subject.ind, time.ind = time.ind)
+  tibble(
+    prevalence = mean(y > 0),
+    mean_abundance = mean(y[y > 0]),
+    logistic_estimate = res$logistic.est.table[2,1],
+    logistic_p.value = res$logistic.est.table[2,2],
+    beta_estimate = res$beta.est.table[2,1],
+    beta_p.value = res$beta.est.table[2,2],
+    p.value = res$joint.p)
+}
+```
+
+
+```{r}
+delivery_mode_zibr_tests <- mp_tidy %>%
+  right_join(s01, by="SampleID") %>%
+  mutate(Present = Abundance > 0) %>%
+  group_by(Assignment, Visit) %>%
+  filter(mean(Present) > 0.2) %>%
+  ungroup() %>%
+  group_by(Assignment, Visit) %>%
+  do(test_igram_zibr(.)) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method = "fdr"))
+```
+
+
+```{r}
+delivery_mode_presence_tests <- mp_tidy %>%
+  right_join(s1_subjs, by="SampleID") %>%
+  mutate(Present = Abundance > 0) %>%
+  group_by(Assignment) %>%
+  filter(mean(Present) > 0.1, mean(Present < 0.9)) %>%
+  do(with(., tidy(fisher.test(table(Present, delivery_type_binary))))) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+```
+
+```{r}
+delivery_mode_fracs <- mp_tidy %>%
+  right_join(s1_subjs, by="SampleID") %>%
+  mutate(Present = Abundance > 0) %>%
+  left_join(delivery_mode_presence_tests, by="Assignment") %>%
+  filter(p.value < 0.05) %>%
+  group_by(Assignment, delivery_type_binary) %>%
+  summarize(FracPresent = mean(Present)) %>%
+  ungroup() %>%
+  mutate(Assignment = fct_reorder(Assignment, ifelse(delivery_type_binary %in% "Vaginal delivery", -FracPresent, 0))) %>%
+  mutate(DataType = factor("Fraction of\nsamples present", levels=c("Relative Abundance", "Fraction of\nsamples present")))
+delivery_mode_abundances <- mp_tidy %>%
+  right_join(s1_subjs, by="SampleID") %>%
+  filter(Assignment %in% delivery_mode_fracs$Assignment) %>%
+  mutate(DataType = factor("Relative Abundance", levels=c("Relative Abundance", "Fraction of\nsamples present")))
+g <- delivery_mode_fracs %>%
+  ggplot(aes(x=Assignment)) +
+  geom_col(aes(y=FracPresent, fill=delivery_type_binary), position="dodge") +
+  geom_quasirandom(aes(y = Abundance, color=delivery_type_binary), data=delivery_mode_abundances, dodge.width=0.9) +
+  scale_fill_manual(values = delivery_palette) +
+  scale_color_manual(values = delivery_palette) +
+  facet_grid(DataType ~ ., scales="free_y") +
+  labs(y="", x="", fill="Delivery type", color="Delivery type") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45, hjust=1, vjust=1),
+    strip.background = element_blank())
+g
+```
+
+```{r}
+library(grid)
+gt = ggplot_gtable(ggplot_build(g))
+gt$heights[6] <- grid::unit(10, "cm")
+gt$heights[8] <- grid::unit(4, "cm")
+dev.off()
+pdf("igram_meconium_figS4C.pdf", width = 7, height = 9)
+grid.draw(gt)
+dev.off()
+#gt
+```
+
+## Breastfeeding
+
+```{r}
+mp0_assigned_sampleids <- birth_bray %>%
+  as.matrix() %>%
+  colnames()
+
+s0_bf <- s0_clinical %>%
+  filter(Visit %in% "Birth") %>%
+  filter(!is.na(feeding_in_hospital)) %>%
+  mutate(BreastfedAny = if_else(
+    str_detect(feeding_in_hospital, "breast|Breast"),
+    "Breastfed", "Formula only")) %>%
+  filter(SampleID %in% mp0_assigned_sampleids) %>%
+  mutate(BreastfedAny = fct_relevel(BreastfedAny, "Formula only")) %>%
+  mutate(BreastfedOnly = feeding_in_hospital %in% "Breastfeeding only")
+
+```
+
+```{r}
+s0_clinical %>% count(feeding_in_hospital, Visit)
+```
+
+
+```{r}
+s1_bf <- s1_subjs %>%
+  mutate(Breastfed = fct_recode(
+    Breastfed, `Breastfeeding only` = "BfOnly",
+    `Breastfeeding and formula` = "BfMix",
+    `Formula only` = "BfForm")) %>%
+  mutate(
+    BreastfedAny = fct_collapse(Breastfed, Breastfed = c(
+      "Breastfeeding and formula", "Breastfeeding only"))) %>%
+  mutate(SubjectID = igram_subject_id_to_clinical(SubjectID)) %>%
+  mutate(BreastfedAny = fct_relevel(BreastfedAny, "Formula only")) %>%
+  mutate(BreastfedOnly = Breastfed %in% "Breastfeeding only")
+```
+
+```{r}
+s_bf <- bind_rows(
+  select(
+    s0_bf, SampleID, SubjectID, Visit, BreastfedAny,
+    BreastfedOnly, intrapartum_antibiotics, infant_on_antibiotics,
+    delivery_type),
+  select(s1_bf, SampleID, SubjectID, Visit, BreastfedAny,
+    BreastfedOnly, intrapartum_antibiotics, infant_on_antibiotics,
+    delivery_type)) %>%
+  mutate(Visit = fct_relevel(Visit, "Birth")) %>%
+  mutate(BreastfedLabel = fct_recode(
+    BreastfedAny, "Formula\nonly" = "Formula only"))
+```
+
+
+
+### Alpha diversity
+
+```{r}
+s_bf %>%
+  left_join(mp_richness, by="SampleID") %>%
+  ggplot(aes(x=BreastfedLabel, y=Richness)) +
+  geom_boxplot(aes(fill=BreastfedLabel)) +
+  ggpubr::stat_compare_means(comparisons = list(c(1,2))) +
+  facet_grid(~ Visit) +
+  scale_fill_manual(values = bf_colors, guide=F) +
+  scale_y_continuous(expand = c(0.1, 0)) +
+  labs(x="", y="Number of bacterial species") +
+  theme_bw() +
+  theme(strip.background = element_blank())
+ggsave("igram_meconium_revision_figS5A.pdf", width=4, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS5A.png", width=4, height=3, dpi=300)
+```
+
+```{r}
+s_bf %>%
+  left_join(mp_richness, by="SampleID") %>%
+  group_by(Visit) %>%
+  do(tidy(wilcox.test(Richness ~ BreastfedLabel, data=.)))
+s_bf %>%
+  left_join(mp_richness, by="SampleID") %>%
+  count(Visit, BreastfedLabel)
+```
+
+
+### Beta diversity
+
+#### Birth
+
+```{r}
+s0_jacc_bf <- dist_subset(birth_jacc, s0_bf$SampleID)
+
+pc <- ape::pcoa(s0_jacc_bf)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+pc$vectors %>%
+  as.data.frame() %>%
+  rownames_to_column("SampleID") %>%
+  select(1:4) %>%
+  inner_join(s0_bf, by="SampleID") %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=BreastfedAny)) +
+  geom_point() +
+  annotate(
+    "text", x=-0.46, y=-0.4, label="P = 0.31", 
+    hjust=0, vjust=0) +
+  scale_color_manual(values = bf_colors) +
+  labs(
+    color="Feeding\nin hospital",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Jaccard distance\nbirth samples") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("igram_meconium_revision_figS5B_left.pdf", width=5, height=3.5, useDingbats=F)
+ggsave("igram_meconium_revision_figS5B_left.png", width=5, height=3.5, dpi=300)
+```
+
+```{r}
+set.seed(1)
+adonis(s0_jacc_bf ~ BreastfedAny, data=s0_bf)
+```
+
+#### 1 month
+
+```{r}
+month_mp <- mp_tidy %>%
+  right_join(s1_subjs, by="SampleID") %>%
+  df_to_matrix("SampleID", "Assignment", "Abundance")
+month_mp <- month_mp[s1_subjs$SampleID,]
+month_jacc <- dist(month_mp, method = "binary")
+
+s1_jacc_bf <- dist_subset(month_jacc, s1_bf$SampleID)
+
+pc <- ape::pcoa(s1_jacc_bf)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+pc$vectors %>%
+  as.data.frame() %>%
+  rownames_to_column("SampleID") %>%
+  select(1:4) %>%
+  inner_join(s1_bf, by="SampleID") %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=BreastfedAny)) +
+  geom_point() +
+  annotate(
+    "text", x=0.22, y=-0.28, label="P = 0.001", 
+    hjust=0, vjust=0) +
+  scale_color_manual(values = bf_colors) +
+  labs(
+    color="Feeding\nat 1 month",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Jaccard distance\n1 month samples") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("igram_meconium_revision_figS5B_right.pdf", width=5, height=3.5, useDingbats=F)
+ggsave("igram_meconium_revision_figS5B_right.png", width=5, height=3.5, dpi=300)
+
+```
+
+```{r}
+set.seed(1)
+adonis(s1_jacc_bf ~ BreastfedAny, data=s1_bf)
+```
+
+### Differential abundance
+
+```{r}
+mp_bf_genus <- mp_tidy %>%
+  right_join(s_bf, by="SampleID") %>%
+  group_by(SampleID, Genus) %>%
+  summarize(Abundance = sum(Abundance)) %>%
+  ungroup() %>%
+  mutate(AbundanceNZ = Abundance + 1e-6) %>%
+  mutate(Present = Abundance > 0) %>%
+  group_by(Genus) %>%
+  filter(mean(Present) > 0.2) %>%
+  ungroup() %>%
+  right_join(s_bf, by="SampleID")
+```
+
+```{r}
+mp_bf_genus %>%
+  group_by(Visit, Genus) %>%
+  summarize(FracPresent = mean(Abundance > 0)) %>%
+  ungroup() %>%
+  spread(Visit, FracPresent)
+```
+
+Bifidobacterium should increase with breastfeeding
+
+```{r}
+mp_bf_genus %>%
+  filter(Genus %in% "Bifidobacterium") %>%
+  ggplot(aes(x=BreastfedLabel, y=AbundanceNZ, color=BreastfedAny)) +
+  ggbeeswarm::geom_quasirandom(shape=1) +
+  ggpubr::stat_compare_means(
+    comparisons = list(c(1,2)),
+    method.args = list(alternative = "less")) +
+  facet_grid(~ Visit) +
+  scale_y_log10(expand=c(0.1, 0)) +
+  scale_color_manual(values = bf_colors, guide=FALSE) +
+  labs(y="Relative abundance", x="") +
+    ggtitle("Bifidobacterium") +
+  theme_bw() +
+  theme(
+    strip.background = element_blank(),
+    plot.title = element_text(size=12, hjust=0.5))
+ggsave("igram_meconium_revision_figS5C.pdf", width=4, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS5C.png", width=4, height=3, dpi=300)
+```
+
+```{r}
+mp_bf_genus %>%
+  filter(Genus %in% "Bifidobacterium") %>%
+  group_by(Visit) %>%
+  do(tidy(wilcox.test(Abundance ~ BreastfedAny, data=., alternative="less")))
+```
+
+Two-sided test for everything else
+
+```{r}
+mp_bf_genus_tests <- mp_bf_genus %>%
+  filter(!(Genus %in% "Bifidobacterium")) %>%
+  group_by(Genus, Visit) %>%
+  do(tidy(wilcox.test(Abundance ~ BreastfedAny, data=.))) %>%
+  ungroup() %>%
+  group_by(Visit) %>%
+  mutate(fdr = p.adjust(p.value, method="fdr")) %>%
+  ungroup()
+```
+
+```{r}
+mp_bf_genus_tests %>%
+  filter(p.value < 0.1) %>%
+  arrange(p.value)
+```
+
+```{r}
+mp_bf_genus_test_labels <- mp_bf_genus_tests %>%
+  mutate(FdrLabel = paste("P =", round(fdr, 3))) %>%
+  filter(fdr < 0.1) %>%
+  mutate(GenusLabel = str_replace(Genus, "_noname", "\n(unclassified)"))
+mp_bf_genus_test_labels %>%
+  filter(fdr < 0.1) %>%
+  left_join(mp_bf_genus, by=c("Genus", "Visit")) %>%
+  ggplot() +
+  ggbeeswarm::geom_quasirandom(
+    aes(x=BreastfedLabel, y=AbundanceNZ, color=BreastfedLabel), 
+    shape=1) +
+  geom_text(
+    aes(x=1.5, y=1.9, label=FdrLabel), 
+    vjust=0,
+    data=mp_bf_genus_test_labels) +
+  facet_wrap(~ Visit + GenusLabel) +
+  scale_y_log10(limits = c(1e-6, 9), breaks=c(1, 1e-2, 1e-4, 1e-6)) +
+  scale_color_manual(values = bf_colors, guide=FALSE) +
+  labs(x="", y="Relative abundance") +
+  theme_bw() +
+  theme(
+    strip.background = element_blank(),
+    plot.title=element_text(hjust=0.5, face="italic", size=7))
+ggsave("igram_meconium_revision_figS5D.pdf", width=6.7, height=6, useDingbats=F)
+ggsave("igram_meconium_revision_figS5D.png", width=6.7, height=6, dpi=300)
+```
+
+## Intra,post-partum abx
+
+Abx columns
+
+```{r}
+s01 %>% colnames() %>% grep("anti", ., value = T)
+```
+
+Table of samples
+
+```{r}
+s01 %>%
+  count(Visit, intrapartum_antibiotics, infant_on_antibiotics, sort = T)
+```
+
+Only test where "infant on antibiotics" is "No".
+
+```{r}
+s01_abx <- s01 %>%
+  filter(
+    intrapartum_antibiotics %in% c("No", "Yes"), 
+    infant_on_antibiotics %in% "No")
+```
+
+### Alpha diversity
+
+```{r}
+mp_richness %>%
+  right_join(s01_abx, by="SampleID") %>% 
+  ggplot(aes(
+    x=intrapartum_antibiotics, y=Richness, fill=intrapartum_antibiotics)) +
+  geom_boxplot() +
+  ggpubr::stat_compare_means(comparisons = list(c(1,2))) +
+  labs(
+    x="", 
+    y="Number of bacterial species") +
+  scale_fill_manual(values = delivery_palette, guide=FALSE) +
+  facet_grid(~ Visit) +
+  scale_y_continuous(expand = c(0.1, 0)) +
+  labs(x="") +
+  theme_bw() +
+  theme(strip.background = element_blank())
+ggsave("igram_meconium_revision_figS6C_left.pdf", width = 4, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS6C_left.png", width = 4, height = 3, dpi=300)
+
+```
+
+```{r}
+mp_richness %>%
+  right_join(s01_abx, by="SampleID") %>%
+  count(Visit, intrapartum_antibiotics)
+```
+
+
+```{r}
+mp_richness %>%
+  right_join(s01_abx, by="SampleID") %>% 
+  group_by(Visit) %>%
+  do(tidy(wilcox.test(Richness ~ intrapartum_antibiotics, data=.)))
+mp_richness %>%
+  right_join(s01_abx, by="SampleID") %>% 
+  group_by(Visit) %>%
+  do(tidy(wilcox.test(Shannon ~ intrapartum_antibiotics, data=.)))
+```
+
+### Beta diversity
+
+#### Birth
+
+```{r}
+s0_subjs_abx <- s01_abx %>%
+  filter(Visit %in% "Birth") %>%
+  filter(!(SubjectID %in% subjs_no_assignments))
+birth_mp <- mp_tidy %>%
+  right_join(s0_subjs_abx, by="SampleID") %>%
+  df_to_matrix("SampleID", "Assignment", "Abundance")
+birth_mp <- birth_mp[s0_subjs_abx$SampleID,]
+birth_bray <- vegdist(birth_mp)
+pc <- ape::pcoa(birth_bray)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s0_subjs_abx, pc$vectors[s0_subjs_abx$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=intrapartum_antibiotics)) +
+  geom_point() +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Bray-Curtis distance\nbetween birth samples (MetaPhlAn2)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+adonis(birth_bray ~ intrapartum_antibiotics, data=s0_subjs_abx)
+```
+
+```{r}
+birth_jacc <- dist(birth_mp, method = "binary")
+pc <- ape::pcoa(birth_jacc)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s0_subjs_abx, pc$vectors[s0_subjs_abx$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=intrapartum_antibiotics)) +
+  geom_point() +
+  annotate(
+    "text", x=-0.4, y=-0.4,
+    hjust=0, vjust=0.5, label="P = 0.13") +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Jaccard distance\nbirth samples") +
+  coord_equal() +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("igram_meconium_revision_figS6C_middle_left.pdf", width = 4, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS6C_middle_left.png", width = 4, height = 3, dpi=300)
+
+```
+
+```{r}
+adonis(birth_jacc ~ intrapartum_antibiotics, data=s0_subjs_abx)
+```
+
+#### 1 Month
+
+```{r}
+s1_subjs_abx <- s01_abx %>%
+  filter(Visit %in% "1 month") %>%
+  filter(!(SubjectID %in% subjs_no_assignments))
+month_mp <- mp_tidy %>%
+  right_join(s1_subjs_abx, by="SampleID") %>%
+  df_to_matrix("SampleID", "Assignment", "Abundance")
+month_mp <- month_mp[s1_subjs_abx$SampleID,]
+month_bray <- vegdist(month_mp)
+pc <- ape::pcoa(month_bray)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s1_subjs_abx, pc$vectors[s1_subjs_abx$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=intrapartum_antibiotics)) +
+  geom_point() +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Bray-Curtis distance\nbetween month samples (MetaPhlAn2)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+adonis(month_bray ~ intrapartum_antibiotics, data=s1_subjs_abx)
+```
+
+```{r}
+month_jacc <- dist(month_mp, method = "binary")
+pc <- ape::pcoa(month_jacc)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s1_subjs_abx, pc$vectors[s1_subjs_abx$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=intrapartum_antibiotics)) +
+  geom_point() +
+  annotate(
+    "text", x=0.16, y=-0.25,
+    hjust=0, vjust=0.5, label="P = 0.89") +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Jaccard distance\n1 month samples") +
+  coord_equal() +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("igram_meconium_revision_figS6C_middle_left2.pdf", width = 4, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS6C_middle_left2.png", width = 4, height = 3, dpi=300)
+```
+
+```{r}
+adonis(month_jacc ~ intrapartum_antibiotics, data=s1_subjs_abx)
+```
+
+### Differential abundance
+
+```{r}
+abx_totest <- mp_tidy %>%
+  right_join(s01_abx, by="SampleID") %>%
+  filter(!(SubjectID %in% subjs_no_assignments)) %>%
+  group_by(Assignment) %>%
+  filter(mean(Abundance > 0) > 0.25) %>%
+  ungroup()
+```
+
+```{r}
+abx_tests <- abx_totest %>%
+  group_by(Assignment, Visit) %>%
+  do(tidy(wilcox.test(Abundance ~ intrapartum_antibiotics, data=.))) %>%
+  ungroup() %>%
+  group_by(Visit) %>%
+  mutate(fdr = p.adjust(p.value, method = "fdr")) %>%
+  ungroup()
+```
+
+No significant results. P-value for E. faecalis is < 0.05 before correction for multiple comparisons.
+
+```{r}
+abx_totest %>%
+  right_join(abx_tests, by=c("Assignment", "Visit")) %>%
+  mutate(FdrLabel = paste("P =", round(fdr, 2))) %>%
+  filter(fdr < 0.5) %>%
+  mutate(Abundance = if_else(Abundance > 0, Abundance, 1e-6)) %>%
+  group_by(Assignment, Visit, intrapartum_antibiotics, FdrLabel) %>%
+  do(tidy(t(quantile(.$Abundance)))) %>%
+  ungroup() %>% 
+  rename(q25 = `X25.`, q50 = `X50.`, q75=`X75.`) %>%
+  select(Assignment, Visit, q25, q50, q75, intrapartum_antibiotics, FdrLabel) %>%
+  mutate(Assignment = fct_reorder(Assignment, q50, max)) %>%
+  ggplot(aes(x=Assignment, color=intrapartum_antibiotics)) +
+  geom_point(aes(y=q50), position=position_dodge(width=0.9)) +
+  geom_errorbar(aes(ymin=q25, ymax=q75), position=position_dodge(width=0.9)) +
+  geom_text(aes(label=FdrLabel, y=1), size=3, color="#333333", hjust=1) +
+  scale_y_log10(breaks=c(1e-6, 1e-4, 1e-2, 1)) +
+  scale_color_manual(values = bf_colors) +
+  facet_wrap(~ Visit) +
+  labs(x="", y="Proportion (log scale)", color="") +
+  coord_flip() +
+  theme_bw() +
+  theme(strip.background = element_blank())
+ggsave("igram_meconium_revision_figS6C_middle_right.pdf", width = 5, height = 1.2, useDingbats=F)
+ggsave("igram_meconium_revision_figS6C_middle_right.png", width = 5, height = 1.2, dpi=300)
+```
+
+
+```{r}
+abx_presence_tests <- mp_tidy %>%
+  right_join(s01_abx, by="SampleID") %>%
+  filter(!(SubjectID %in% subjs_no_assignments)) %>%
+  mutate(Present = Abundance > 0) %>%
+  group_by(Assignment, Visit) %>%
+  filter(mean(Present) > 0.1, mean(Present < 0.9)) %>%
+  do(with(., tidy(fisher.test(table(Present, intrapartum_antibiotics))))) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+```
+
+S. epidermidis, E. faecalis different at birth.
+
+```{r}
+mp_tidy %>%
+  filter(Species %in% "Staphylococcus epidermidis") %>%
+  right_join(s01_abx, by="SampleID") %>%
+  filter(!(SubjectID %in% subjs_no_assignments)) %>%
+  mutate(Present = Abundance > 0) %>%
+  ggplot() +
+  geom_bar(aes(x=intrapartum_antibiotics, fill=Present)) +
+  facet_grid(~ Visit) +
+  scale_color_manual()
+  labs(x="Intrapartum antibiotics\n(no post-partum antibiotics)") +
+  theme_bw()
+```
+
+
+## Maternal obesity
+
+Variables: igram_group is categorical
+
+```{r}
+s01 %>%
+  count(igram_group, Visit) %>%
+  spread(Visit, n)
+```
+
+```{r}
+s0_clinical %>%
+  ggplot() +
+  geom_histogram(aes(x=hrs_to_collection, fill=igram_group))
+```
+
+```{r}
+wilcox.test(hrs_to_collection ~ igram_group, data=s0_clinical)
+```
+
+### Alpha diversity
+
+```{r}
+mp_richness %>%
+  right_join(s01, by="SampleID") %>% 
+  ggplot(aes(
+    x=igram_group, y=Richness, fill=igram_group)) +
+  geom_boxplot() +
+  ggpubr::stat_compare_means(comparisons = list(c(1,2))) +
+  labs(
+    x="", 
+    y="Number of bacterial species") +
+  scale_fill_manual(values = delivery_palette, guide=FALSE) +
+  facet_grid(~ Visit) +
+  scale_y_continuous(expand = c(0.1, 0)) +
+  labs(x="") +
+  theme_bw() +
+  theme(strip.background = element_blank())
+ggsave("igram_meconium_revision_figS6A_left.pdf", width = 4, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS6A_left.png", width = 4, height = 3, dpi=300)
+```
+
+```{r}
+mp_richness %>%
+  right_join(s01, by="SampleID") %>% 
+  group_by(Visit) %>%
+  do(tidy(wilcox.test(Richness ~ igram_group, data=.)))
+mp_richness %>%
+  right_join(s01, by="SampleID") %>% 
+  group_by(Visit) %>%
+  do(tidy(wilcox.test(Shannon ~ igram_group, data=.)))
+```
+
+```{r}
+mp_richness %>%
+  right_join(s01, by="SampleID") %>% 
+  count(Visit, igram_group)
+```
+
+
+### Beta diversity
+
+#### Birth
+
+```{r}
+s0_subjs <- s01 %>%
+  filter(Visit %in% "Birth") %>%
+  filter(!(SubjectID %in% subjs_no_assignments))
+birth_mp <- mp_tidy %>%
+  right_join(s0_subjs, by="SampleID") %>%
+  df_to_matrix("SampleID", "Assignment", "Abundance")
+birth_mp <- birth_mp[s0_subjs$SampleID,]
+birth_bray <- vegdist(birth_mp)
+pc <- ape::pcoa(birth_bray)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s0_subjs, pc$vectors[s0_subjs$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=igram_group)) +
+  geom_point() +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Bray-Curtis distance\nbetween birth samples (MetaPhlAn2)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+adonis(birth_bray ~ igram_group, data=s0_subjs)
+```
+
+```{r}
+birth_jacc <- dist(birth_mp, method = "binary")
+pc <- ape::pcoa(birth_jacc)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s0_subjs, pc$vectors[s0_subjs$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=igram_group)) +
+  geom_point() +
+  annotate(
+    "text", x=-0.4, y=-0.4, label="P = 0.40",
+    hjust=0, vjust=0.5) +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Jaccard distance\nbirth samples") +
+  coord_equal() +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("igram_meconium_revision_figS6A_middle_left.pdf", width = 4, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS6A_middle_left.png", width = 4, height = 3, dpi=300)
+```
+
+```{r}
+adonis(birth_jacc ~ igram_group, data=s0_subjs)
+```
+
+#### 1 Month
+
+```{r}
+s1_subjs <- s01 %>%
+  filter(Visit %in% "1 month") %>%
+  filter(!(SubjectID %in% subjs_no_assignments))
+month_mp <- mp_tidy %>%
+  right_join(s1_subjs, by="SampleID") %>%
+  df_to_matrix("SampleID", "Assignment", "Abundance")
+month_mp <- month_mp[s1_subjs$SampleID,]
+month_bray <- vegdist(month_mp)
+pc <- ape::pcoa(month_bray)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s1_subjs, pc$vectors[s1_subjs$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=igram_group)) +
+  geom_point() +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Bray-Curtis distance\nbetween month samples (MetaPhlAn2)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+adonis(month_bray ~ igram_group, data=s1_subjs)
+```
+
+```{r}
+month_jacc <- dist(month_mp, method = "binary")
+pc <- ape::pcoa(month_jacc)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s1_subjs, pc$vectors[s1_subjs$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=igram_group)) +
+  geom_point() +
+  annotate(
+    "text", x=0.1, y=-0.3, label="P = 0.65",
+    hjust=0, vjust=0) +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Jaccard distance\n1 month samples") +
+  coord_equal() +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("igram_meconium_revision_figS6A_middle_left2.pdf", width = 4, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS6A_middle_left2.png", width = 4, height = 3, dpi=300)
+```
+
+```{r}
+adonis(month_jacc ~ igram_group, data=s1_subjs)
+```
+
+### Differential abundance
+
+```{r}
+obesity_totest <- mp_tidy %>%
+  right_join(s01, by="SampleID") %>%
+  filter(!(SubjectID %in% subjs_no_assignments)) %>%
+  group_by(Assignment) %>%
+  filter(mean(Abundance > 0) > 0.25) %>%
+  ungroup()
+```
+
+```{r}
+obesity_tests <- obesity_totest %>%
+  group_by(Assignment, Visit) %>%
+  do(tidy(wilcox.test(Abundance ~ igram_group, data=.))) %>%
+  ungroup() %>%
+  group_by(Visit) %>%
+  mutate(fdr = p.adjust(p.value, method = "fdr")) %>%
+  ungroup()
+```
+
+```{r}
+obesity_totest %>%
+  right_join(obesity_tests, by=c("Assignment", "Visit")) %>%
+  mutate(FdrLabel = paste("P =", round(fdr, 2))) %>%
+  filter(fdr < 0.5) %>%
+  group_by(Assignment, Visit, igram_group, FdrLabel) %>%
+  do(tidy(t(quantile(.$Abundance)))) %>%
+  ungroup() %>% 
+  rename(q25 = `X25.`, q50 = `X50.`, q75=`X75.`) %>%
+  select(Assignment, Visit, q25, q50, q75, igram_group, FdrLabel) %>%
+  mutate(Assignment = fct_reorder(Assignment, q50, max)) %>%
+  ggplot(aes(x=Assignment, color=igram_group)) +
+  geom_point(aes(y=q50), position=position_dodge(width=0.9)) +
+  geom_errorbar(aes(ymin=q25, ymax=q75), position=position_dodge(width=0.9)) +
+  geom_text(aes(label=FdrLabel, y=0.1), size=3, color="#333333", hjust=1) +
+  scale_y_log10() +
+  scale_color_manual(values = bf_colors) +
+  facet_wrap(~ Visit) +
+  labs(x="", y="Proportion (log scale)", color="") +
+  coord_flip() +
+  theme_bw() +
+  theme(strip.background = element_blank())
+ggsave("igram_meconium_revision_figS6A_middle_right.pdf", width = 5, height = 1.2, useDingbats=F)
+ggsave("igram_meconium_revision_figS6A_middle_right.png", width = 5, height = 1.2, dpi=300)
+```
+
+
+No significant results. P-value for V. parvula at 1 month is < 0.05 before correction for multiple comparisons.
+
+```{r}
+obesity_presence_tests <- mp_tidy %>%
+  right_join(s01, by="SampleID") %>%
+  filter(!(SubjectID %in% subjs_no_assignments)) %>%
+  mutate(Present = Abundance > 0) %>%
+  group_by(Assignment, Visit) %>%
+  filter(mean(Present) > 0.1, mean(Present < 0.9)) %>%
+  do(with(., tidy(fisher.test(table(Present, igram_group))))) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+```
+
+No significant results. P-value for Stenotrophomonas (unclassified) at 1 month is less than 0.05 before correction.
+
+## Gestational age
+
+Variable is gest_age
+
+```{r}
+s01 %>%
+  select(SubjectID, Visit, gest_age) %>%
+  spread(Visit, gest_age)
+s01_gest <- s01 %>%
+  filter(!is.na(gest_age))
+```
+
+```{r}
+s01_gest %>%
+  filter(Visit %in% "Birth") %>%
+  ggplot() +
+  geom_histogram(aes(x=gest_age)) +
+  theme_bw()
+```
+
+Correlation with mode of delivery
+
+```{r}
+s01_gest %>%
+  filter(Visit %in% "Birth") %>%
+  ggplot() +
+  geom_boxplot(aes(x=delivery_type, y=gest_age))
+```
+
+Gestational age is not different according to delivery type.
+
+```{r}
+s01_gest %>%
+  filter(Visit %in% "Birth") %>%
+  filter(!is.na(gest_age)) %>%
+  with(pairwise.wilcox.test(gest_age, delivery_type))
+```
+
+### Alpha diversity
+
+```{r}
+mp_richness %>%
+  right_join(s01_gest, by="SampleID") %>% 
+  ggplot(aes(
+    x=gest_age, y=Richness)) +
+  ggpubr::stat_cor(method="spearman", label.y = 64) +
+  geom_point(aes(color=gest_age)) +
+  labs(
+    x="Gestational age", 
+    y="Number of bacterial species)",
+    color="Gestational age") +
+  viridis::scale_color_viridis(guide=F) +
+  facet_grid(~ Visit) +
+  theme_bw()+
+  theme(strip.background = element_blank())
+#ggsave("igram_meconium_figS4A.pdf", width = 5, height = 3)
+ggsave("igram_meconium_revision_figS6B_left.pdf", width = 4, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS6B_left.png", width = 4, height = 3, dpi=300)
+```
+
+```{r}
+mp_richness %>%
+  right_join(s01_gest, by="SampleID") %>% 
+  group_by(Visit) %>%
+  do(tidy(cor.test(~ Richness + gest_age, data=., method="spearman")))
+mp_richness %>%
+  right_join(s01_gest, by="SampleID") %>% 
+  group_by(Visit) %>%
+  do(tidy(cor.test(~ Shannon + gest_age, data=., method="spearman")))
+```
+
+### Beta diversity
+
+#### Birth
+
+```{r}
+s0_subjs <- s01_gest %>%
+  filter(Visit %in% "Birth") %>%
+  filter(!(SubjectID %in% subjs_no_assignments))
+birth_mp <- mp_tidy %>%
+  right_join(s0_subjs, by="SampleID") %>%
+  df_to_matrix("SampleID", "Assignment", "Abundance")
+birth_mp <- birth_mp[s0_subjs$SampleID,]
+birth_bray <- vegdist(birth_mp)
+pc <- ape::pcoa(birth_bray)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s0_subjs, pc$vectors[s0_subjs$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=gest_age)) +
+  geom_point() +
+  labs(
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Bray-Curtis distance\nbetween birth samples (MetaPhlAn2)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+adonis(birth_bray ~ gest_age, data=s0_subjs)
+```
+
+```{r}
+birth_jacc <- dist(birth_mp, method = "binary")
+pc <- ape::pcoa(birth_jacc)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s0_subjs, pc$vectors[s0_subjs$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=gest_age)) +
+  geom_point() +
+  annotate(
+    "text", x=0.2, y=-0.39, label="P = 0.92",
+    hjust=0, vjust=0) +
+  labs(
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Jaccard distance\nbirth samples") +
+  coord_equal() +
+  theme_bw() +
+  viridis::scale_color_viridis(guide=F) +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("igram_meconium_revision_figS6B_middle_left.pdf", width = 4, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS6B_middle_left.png", width = 4, height = 3, dpi=300)
+```
+
+```{r}
+adonis(birth_jacc ~ gest_age, data=s0_subjs)
+```
+
+#### 1 Month
+
+```{r}
+s1_subjs <- s01_gest %>%
+  filter(Visit %in% "1 month") %>%
+  filter(!(SubjectID %in% subjs_no_assignments))
+month_mp <- mp_tidy %>%
+  right_join(s1_subjs, by="SampleID") %>%
+  df_to_matrix("SampleID", "Assignment", "Abundance")
+month_mp <- month_mp[s1_subjs$SampleID,]
+month_bray <- vegdist(month_mp)
+pc <- ape::pcoa(month_bray)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s1_subjs, pc$vectors[s1_subjs$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=gest_age)) +
+  geom_point() +
+  labs(
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Bray-Curtis distance\nbetween month samples (MetaPhlAn2)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+adonis(month_bray ~ gest_age, data=s1_subjs)
+```
+
+```{r}
+month_jacc <- dist(month_mp, method = "binary")
+pc <- ape::pcoa(month_jacc)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s1_subjs, pc$vectors[s1_subjs$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=gest_age)) +
+  geom_point() +
+  annotate(
+    "text", x=-0.3, y=-0.25, label="P = 0.63",
+    hjust=0, vjust=0) +
+  labs(
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  viridis::scale_color_viridis(guide=F) +
+  ggtitle("Jaccard distance\n1 month samples") +
+  coord_equal() +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("igram_meconium_revision_figS6B_middle_left2.pdf", width = 4, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS6B_middle_left2.png", width = 4, height = 3, dpi=300)
+```
+
+```{r}
+adonis(month_jacc ~ gest_age, data=s1_subjs)
+```
+
+### Differential abundance
+
+```{r}
+gest_totest <- mp_tidy %>%
+  right_join(s01_gest, by="SampleID") %>%
+  filter(!(SubjectID %in% subjs_no_assignments)) %>%
+  group_by(Assignment) %>%
+  filter(mean(Abundance > 0) > 0.25) %>%
+  ungroup()
+```
+
+```{r}
+gest_tests <- gest_totest %>%
+  group_by(Assignment, Visit) %>%
+  do(tidy(cor.test(~ Abundance + gest_age, data=., method="spearman"))) %>%
+  ungroup() %>%
+  group_by(Visit) %>%
+  mutate(fdr = p.adjust(p.value, method = "fdr")) %>%
+  ungroup()
+```
+
+No significant results.
+
+```{r}
+gest_labels <- gest_tests %>%
+  filter(fdr < 0.9) %>%
+  mutate(FdrLabel = paste("P =", round(fdr, 2)))
+gest_totest %>%
+  right_join(gest_tests, by=c("Assignment", "Visit")) %>%
+  filter(fdr < 0.9) %>%
+  ggplot(aes(y=Abundance, x=gest_age)) +
+  geom_point(aes(color=gest_age)) +
+  geom_smooth(method="lm", size=0.7) +
+  geom_text(
+    aes(label=FdrLabel, y=1e-5, x=40.5), data=gest_labels,
+    size=3, color="#333333", hjust=0, vjust=0) +
+  facet_wrap(~ Assignment + Visit) +
+  viridis::scale_color_viridis() +
+  scale_y_log10() +
+  labs(x="Gestational age", y="Relative abundance", color="Gestational\nage") +
+  theme_bw() +
+  theme(strip.background = element_blank())
+ggsave("igram_meconium_revision_figS6B_middle_right.pdf", width = 6, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS6B_middle_right.png", width = 6, height = 3, dpi=300)
+```
+
+
+```{r}
+gest_presence_tests <- mp_tidy %>%
+  right_join(s01_gest, by="SampleID") %>%
+  filter(!(SubjectID %in% subjs_no_assignments)) %>%
+  mutate(Present = Abundance > 0) %>%
+  group_by(Assignment, Visit) %>%
+  filter(mean(Present) > 0.1, mean(Present < 0.9)) %>%
+  do(tidy(glm(Present ~ gest_age, data=.))) %>%
+  ungroup() %>%
+  filter(!(term %in% "(Intercept)")) %>%
+  group_by(Visit) %>%
+  mutate(fdr = p.adjust(p.value, method="fdr")) %>%
+  ungroup()
+gest_presence_tests %>%
+  count(Visit)
+```
+
+No significant results. Lactobacillus salivarius and V. parvula decrease with gestational age at 1 month, but p-value is not significant after correction.
+
+## Unexposed infants
+
+```{r}
+unexposed_subjs <- with(s0_clinical, SubjectID[Unexposed])
+s_unexposed <- s_bf %>%
+  mutate(Unexposed = SubjectID %in% unexposed_subjs) %>%
+  mutate(UnexposedLabel = ifelse(
+    Unexposed, "Vaginal delivery,\nno antibiotics, breastfed", "Others")) %>%
+  mutate(UnexposedLabel = fct_relevel(
+    UnexposedLabel, "Others", after=Inf))
+```
+
+Some samples have no assignments and are not included in subsequent figures.
+
+```{r}
+s_unexposed %>%
+  count(Visit, Unexposed)
+```
+
+
+
+
+```{r}
+s0_clinical %>%
+  ggplot() +
+  geom_histogram(aes(x=hrs_to_collection, fill=UnexposedLabel)) +
+  scale_fill_manual(values = delivery_palette) +
+  labs(y="Number of samples", x="Hours to collection", fill="") +
+  annotate(
+    "text", x=150, y=15, label="P = 0.7") +
+  theme_bw()
+ggsave("igram_meconium_revision_figS7A.pdf", width = 5, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS7A.png", width = 5, height = 3, dpi=300)
+```
+
+```{r}
+s0_clinical %>%
+  count(UnexposedLabel)
+```
+
+
+```{r}
+wilcox.test(hrs_to_collection ~ Unexposed, data=s0_clinical)
+```
+
+### Alpha diversity
+
+```{r}
+mp_richness %>%
+  right_join(s_unexposed, by="SampleID") %>% 
+  ggplot(aes(
+    x=UnexposedLabel, y=Richness, fill=UnexposedLabel)) +
+  geom_boxplot() +
+  ggpubr::stat_compare_means(comparisons = list(c(1,2))) +
+  labs(
+    x="", 
+    y="Number of bacterial species") +
+  scale_fill_manual(values = delivery_palette, guide=FALSE) +
+  facet_grid(~ Visit) +
+  scale_y_continuous(expand = c(0.1, 0)) +
+  labs(x="") +
+  theme_bw() +
+  theme(strip.background = element_blank())
+ggsave("igram_meconium_revision_figS7B.pdf", width = 4, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS7B.png", width = 4, height = 3, dpi=300)
+```
+
+```{r}
+mp_richness %>%
+  right_join(s_unexposed, by="SampleID") %>% 
+  group_by(Visit) %>%
+  do(tidy(wilcox.test(Richness ~ UnexposedLabel, data=.)))
+mp_richness %>%
+  right_join(s_unexposed, by="SampleID") %>% 
+  group_by(Visit) %>%
+  do(tidy(wilcox.test(Shannon ~ UnexposedLabel, data=.)))
+```
+
+### Beta diversity
+
+#### Birth
+
+```{r}
+s0_subjs <- s_unexposed %>%
+  filter(Visit %in% "Birth")
+birth_mp <- mp_tidy %>%
+  right_join(s0_subjs, by="SampleID") %>%
+  df_to_matrix("SampleID", "Assignment", "Abundance")
+birth_mp <- birth_mp[s0_subjs$SampleID,]
+birth_bray <- vegdist(birth_mp)
+pc <- ape::pcoa(birth_bray)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s0_subjs, pc$vectors[s0_subjs$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=UnexposedLabel)) +
+  geom_point() +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Bray-Curtis distance\nbetween birth samples (MetaPhlAn2)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+adonis(birth_bray ~ UnexposedLabel, data=s0_subjs)
+```
+
+```{r}
+birth_jacc <- dist(birth_mp, method = "binary")
+pc <- ape::pcoa(birth_jacc)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s0_subjs, pc$vectors[s0_subjs$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=UnexposedLabel)) +
+  geom_point() +
+  annotate(
+    "text", x=-0.4, y=-0.4, label="P = 0.23",
+    hjust=0, vjust=0.5) +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Jaccard distance\nbirth samples") +
+  coord_equal() +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("igram_meconium_revision_figS7C_left.pdf", width = 4, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS7C_left.png", width = 4, height = 3, dpi=300)
+```
+
+```{r}
+adonis(birth_jacc ~ UnexposedLabel, data=s0_subjs)
+```
+
+#### 1 Month
+
+```{r}
+s1_subjs <- s_unexposed %>%
+  filter(Visit %in% "1 month")
+month_mp <- mp_tidy %>%
+  right_join(s1_subjs, by="SampleID") %>%
+  df_to_matrix("SampleID", "Assignment", "Abundance")
+month_mp <- month_mp[s1_subjs$SampleID,]
+month_bray <- vegdist(month_mp)
+pc <- ape::pcoa(month_bray)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s1_subjs, pc$vectors[s1_subjs$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=UnexposedLabel)) +
+  geom_point() +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Bray-Curtis distance\nbetween month samples (MetaPhlAn2)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+adonis(month_bray ~ UnexposedLabel, data=s1_subjs)
+```
+
+```{r}
+month_jacc <- dist(month_mp, method = "binary")
+pc <- ape::pcoa(month_jacc)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+cbind(s1_subjs, pc$vectors[s1_subjs$SampleID,]) %>%
+  mutate(SampleLabel = ifelse(Axis.2 > 0.25, SampleID, "")) %>%
+  ggplot(aes(x=Axis.1, y=Axis.2, color=UnexposedLabel)) +
+  geom_point() +
+  annotate(
+    "text", x=0.2, y=-0.3, label="P = 0.18",
+    hjust=0, vjust=0) +
+  scale_color_manual(values = delivery_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Jaccard distance\n1 month samples") +
+  coord_equal() +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("igram_meconium_revision_figS7C_right.pdf", width = 4, height = 3, useDingbats=F)
+ggsave("igram_meconium_revision_figS7C_right.png", width = 4, height = 3, dpi=300)
+```
+
+```{r}
+adonis(month_jacc ~ UnexposedLabel, data=s1_subjs)
+```
+
+### Differential abundance
+
+```{r}
+unexposed_totest <- mp_tidy %>%
+  right_join(s_unexposed, by="SampleID") %>%
+  group_by(Assignment) %>%
+  filter(mean(Abundance > 0) > 0.25) %>%
+  ungroup()
+```
+
+```{r}
+unexposed_tests <- unexposed_totest %>%
+  group_by(Assignment, Visit) %>%
+  do(tidy(wilcox.test(Abundance ~ UnexposedLabel, data=.))) %>%
+  ungroup() %>%
+  group_by(Visit) %>%
+  mutate(fdr = p.adjust(p.value, method = "fdr")) %>%
+  ungroup()
+```
+
+```{r}
+unexposed_totest %>%
+  right_join(unexposed_tests, by=c("Assignment", "Visit")) %>%
+  mutate(FdrLabel = paste("P =", round(fdr, 2))) %>%
+  filter(fdr < 0.5) %>%
+  group_by(Assignment, Visit, UnexposedLabel, FdrLabel) %>%
+  do(tidy(t(quantile(.$Abundance)))) %>%
+  ungroup() %>% 
+  rename(q25 = `X25.`, q50 = `X50.`, q75=`X75.`) %>%
+  select(Assignment, Visit, q25, q50, q75, UnexposedLabel, FdrLabel) %>%
+  mutate(Assignment = fct_reorder(Assignment, q50, max)) %>%
+  ggplot(aes(x=Assignment, color=UnexposedLabel)) +
+  geom_point(aes(y=q50), position=position_dodge(width=0.9)) +
+  geom_errorbar(
+    aes(ymin=q25, ymax=q75), 
+    position=position_dodge(width=0.9)) +
+  geom_text(
+    aes(label=FdrLabel, y=5), size=3, color="#333333", hjust=1) +
+  scale_y_log10() +
+  scale_color_manual(values = delivery_palette) +
+  facet_wrap(~ Visit) +
+  labs(x="", y="Proportion (log scale)", color="") +
+  coord_flip() +
+  theme_bw() +
+  theme(strip.background = element_blank())
+ggsave("igram_meconium_revision_figS7D.pdf", width = 5, height = 1.2, useDingbats=F)
+ggsave("igram_meconium_revision_figS7D.png", width = 5, height = 1.2, dpi=300)
+```
+
+
+No significant results. P-value for V. parvula at 1 month is < 0.05 before correction for multiple comparisons.
+
+```{r}
+unexposed_presence_tests <- mp_tidy %>%
+  right_join(s_unexposed, by="SampleID") %>%
+  filter(!(SubjectID %in% subjs_no_assignments)) %>%
+  mutate(Present = Abundance > 0) %>%
+  group_by(Assignment, Visit) %>%
+  filter(mean(Present) > 0.1, mean(Present < 0.9)) %>%
+  do(with(., tidy(fisher.test(table(Present, UnexposedLabel))))) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+```
+
+No significant results. P-value for Stenotrophomonas (unclassified) at 1 month is less than 0.05 before correction.
+
+
+## Birth samples
+
+### Virus bar chart
+
+```{r}
+samples_with_viruses <- mp_tidy %>%
+  filter(Kingdom %in% "Viruses") %>%
+  filter(PctAbundance > 0) %>%
+  filter(!grepl("MockDNA", SampleID)) %>%
+  filter(!(Species %in% "Enterobacteria phage_lambda")) %>%
+  filter(!(grepl("1mo|4mo", SampleID))) 
+```
+
+```{r}
+filter_for_viruses <- function (df, abundance_threshold) {
+  df %>%
+    filter(
+      ((Kingdom %in% "Viruses") & (Abundance > 0)) |
+        (!(Kingdom %in% "Viruses") & (Abundance > abundance_threshold)))
+}
+make_taxon_label <- function (kingdom, phylum) {
+  is_bacteria <- kingdom %in% "Bacteria"
+  ifelse(is_bacteria, phylum, kingdom) %>%
+    fct_reorder(as.numeric(!is_bacteria))
+}
+make_species_label <- function (species) {
+  species %>%
+    str_replace("_", " ") %>%
+    str_replace("unclassified", "(unclassified)") %>%
+    factor()
+}
+make_sample_label <- function (sample_id, subject_id) {
+  ifelse(
+    is.na(subject_id), 
+    paste("Neg. control", last_char(sample_id), sep="\n"),
+    paste("Subj.", extract_numeric(subject_id), sep="\n"))
+}
+last_char <-function (x) {
+  n <- nchar(x)
+  substring(x, n, n)
+}
+samples_with_viruses %>%
+  count(SampleID) %>%
+  left_join(mp_tidy, by="SampleID") %>%
+  left_join(s0_clinical, by="SampleID") %>%
+  filter_for_viruses(0.05) %>%
+  mutate(TaxonLabel = make_taxon_label(Kingdom, Phylum)) %>%
+  mutate(SpeciesLabel = make_species_label(Species)) %>%
+  mutate(SpeciesLabel = fct_reorder(SpeciesLabel, as.numeric(TaxonLabel))) %>%
+  mutate(SampleLabel = make_sample_label(SampleID, SubjectID)) %>%
+  ggplot() +
+  geom_col(aes(x=SpeciesLabel, y=Abundance, fill=TaxonLabel)) +
+  facet_grid(~ SampleLabel, scales="free_x", space="free_x") +
+  scale_fill_d3(palette="category20") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(fill="", x="") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90, vjust=0.4, hjust=1))
+ggsave("igram_meconium_taxabars.pdf", width=13, height=4.5)
+```
+
+### Heatmap
+
+```{r}
+abundance_palette <- c("#FFFFFF", brewer.pal(9, "RdPu")[3:9])
+abundance_breaks <- c(0, 1e-5, (1:7) / 7)
+```
+
+```{r}
+reorder_assignments <- function (a, phylum) {
+  a %>%
+    fct_reorder(as.numeric(factor(phylum))) %>%
+    fct_relevel("Candida albicans", "No assignments", after=Inf) %>%
+    fct_rev()
+}
+make_sample_label <- function (subject_id) {
+  subject_id %>%
+    str_replace("s", "") %>%
+    str_replace("-2", "") %>%
+    paste("Subject", .)
+}
+mp_heatmap_data <- mp_tidy %>%
+  left_join(s, by="SampleID") %>%
+  left_join(select(s0_clinical, SampleID, hrs_to_collection, Group16), by="SampleID") %>%
+  mutate(SampleLabel = make_sample_label(SubjectID)) %>%
+  mutate(SampleLabel = fct_reorder(SampleLabel, hrs_to_collection, na.rm=TRUE)) %>%
+  mutate(Assignment = reorder_assignments(Assignment, Phylum))
+mp_heatmap_data_birth <- mp_heatmap_data %>%
+  filter(Visit %in% "Birth") %>%
+  mutate(After16 = fct_explicit_na(Group16, "n.d.")) %>%
+  group_by(Species) %>%
+  mutate(MaxAbundance = max(Abundance)) %>%
+  ungroup() %>%
+  filter(MaxAbundance > ifelse(Kingdom %in% "Viruses", 0, 0.1))
+```
+
+Main heatmap
+
+```{r}
+mp_heatmap_data_birth %>%
+  ggplot(aes(SampleLabel, Assignment, fill=Abundance)) +
+  geom_tile(color="grey40", size=0.4) + 
+  scale_fill_gradientn(colors=abundance_palette, values=abundance_breaks) +
+  labs(x="", y="") +
+  coord_equal() +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    strip.text.y = element_blank(),
+    strip.background = element_blank(),
+    axis.text.x = element_text(angle=90, hjust=1, vjust=0.4))
+ggsave("igram_meconium_ggheatmap_d0.pdf", width=15, height=9)
+ggsave("igram_meconium_revision_figS1A_middle_top.pdf", width=15, height=9)
+ggsave("igram_meconium_revision_figS1A_middle_top.png", width=15, height=9, dpi=300)
+
+```
+
+```{r}
+p <- mp_heatmap_data_birth %>%
+  group_by(Assignment) %>%
+  summarize(Prevalence = mean(Abundance > 0)) %>%
+  ggplot(aes(x=Assignment, y=Prevalence)) +
+  geom_col() +
+  coord_flip() +
+  theme_classic() +
+  theme(
+    axis.line.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank())
+p
+ggsave("igram_meconium_revision_figS1A_right.pdf", width=2, height = 6)
+```
+
+```{r}
+p + scale_y_continuous(breaks=c(0, 0.25, 0.5))
+ggsave("igram_meconium_revision_figS1A_right_thin.pdf", width=1.5, height = 6)
+```
+
+
+Genus-level heatmap
+
+```{r}
+mp_heatmap_data_birth %>%
+  group_by(SampleLabel, Kingdom, Phylum, Genus) %>%
+  summarize(Abundance = sum(Abundance)) %>%
+  ungroup() %>%
+  mutate(Genus = str_remove(Genus, "_noname$")) %>%
+  mutate(Phylum = str_remove(Phylum, "_noname$")) %>%
+  group_by(Kingdom, Phylum, Genus) %>%
+  mutate(MaxAbundance = max(Abundance)) %>%
+  ungroup() %>%
+  filter(MaxAbundance > ifelse(Kingdom %in% "Viruses", 0, 0.1)) %>%
+  mutate(GenusLabel = ifelse(
+    is.na(Phylum), Kingdom, paste(Phylum, "-", Genus))) %>%
+  mutate(GenusLabel = str_replace(
+    GenusLabel, "unclassified", "No assignments")) %>%
+  mutate(GenusLabel = fct_relevel(
+    GenusLabel, "Ascomycota - Candida", "No assignments", after=Inf)) %>%
+  mutate(GenusLabel = fct_rev(GenusLabel)) %>%
+  ggplot(aes(SampleLabel, GenusLabel, fill=Abundance)) +
+  geom_tile(color="grey40", size=0.4) + 
+  scale_fill_gradientn(colors=abundance_palette, values=abundance_breaks) +
+  labs(x="", y="") +
+  coord_equal() +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    strip.text.y = element_blank(),
+    strip.background = element_blank(),
+    axis.text.x = element_text(angle=90, hjust=1, vjust=0.4))
+ggsave("igram_meconium_ggheatmap_genus.pdf", width=15, height=9)
+ggsave("igram_meconium_revision_figS1A_middle_bottom.pdf", width=15, height=9)
+ggsave("igram_meconium_revision_figS1A_middle_bottom.png", width=15, height=9, dpi=300)
+```
+
+Phylum-level heatmap
+
+```{r}
+mp_heatmap_data_birth %>%
+  group_by(SampleLabel, Kingdom, Phylum) %>%
+  summarize(Abundance = sum(Abundance)) %>%
+  ungroup() %>%
+  mutate(Phylum = str_remove(Phylum, "_noname$")) %>%
+  group_by(Kingdom, Phylum) %>%
+  mutate(MaxAbundance = max(Abundance)) %>%
+  ungroup() %>%
+  filter(MaxAbundance > ifelse(Kingdom %in% "Viruses", 0, 0.1)) %>%
+  mutate(PhylumLabel = ifelse(
+    is.na(Phylum), Kingdom, paste(Kingdom, "-", Phylum))) %>%
+  mutate(PhylumLabel = fct_recode(
+    PhylumLabel, 
+    "No assignments" = "unclassified",
+    "Fungi - Ascomycota" = "Ascomycota")) %>%
+  mutate(PhylumLabel = fct_relevel(
+    PhylumLabel, "Fungi - Ascomycota", "No assignments", after=Inf)) %>%
+  mutate(PhylumLabel = fct_rev(PhylumLabel)) %>%
+  ggplot(aes(SampleLabel, PhylumLabel, fill=Abundance)) +
+  geom_tile(color="grey40", size=0.4) + 
+  scale_fill_gradientn(colors=abundance_palette, values=abundance_breaks) +
+  labs(x="", y="") +
+  coord_equal() +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    strip.text.y = element_blank(),
+    strip.background = element_blank(),
+    axis.text.x = element_text(angle=90, hjust=1, vjust=0.4))
+ggsave("igram_meconium_ggheatmap_phylum.pdf", width=15, height=9)
+ggsave("igram_meconium_revision_figS1A_bottom.pdf", width=15, height=9)
+ggsave("igram_meconium_revision_figS1A_bottom.png", width=15, height=9, dpi=300)
+```
+
+Auxilary plot for top of figure
+
+```{r}
+mp_heatmap_data_birth %>% 
+  count(SampleLabel, hrs_to_collection) %>%
+  ggplot() +
+  geom_col(aes(x=SampleLabel, y=hrs_to_collection), fill="#365fa0") +
+  scale_y_continuous(expand = c(0,0)) +
+  labs(y="Hours to\nsample collection") +
+  theme_classic() +
+  theme(
+    axis.ticks.x = element_blank(), 
+    axis.line.x = element_blank(),
+    axis.text.x = element_blank(), 
+    axis.title.x = element_blank())
+ggsave("igram_meconium_hrs_d0.pdf", width=12, height=1.5)
+ggsave("igram_meconium_revision_figS1A_top.pdf", width=12, height=1.5)
+ggsave("igram_meconium_revision_figS1A_top.png", width=12, height=1.5, dpi=300)
+```
+
+Auxilary stats
+
+```{r}
+mp_heatmap_data_birth %>%
+  group_by(Species) %>%
+  mutate(MaxAbundance = max(Abundance)) %>%
+  ungroup() %>%
+  filter(MaxAbundance > ifelse(Kingdom %in% "Viruses", 0, 0.1)) %>%
+  group_by(Assignment) %>%
+  summarize(Prevalence = mean(Abundance > 0), 
+            MeanAbundance = mean(Abundance)) %>%
+  ungroup() %>%
+  arrange(desc(Prevalence))
+```
+
+## 1 month samples
+
+### Heatmap
+
+```{r}
+mp_heatmap_data_1month <- mp_heatmap_data %>%
+  filter(Visit %in% "1 month")
+mp_heatmap_data_1month %>%
+  group_by(Species) %>%
+  mutate(MaxAbundance = max(Abundance)) %>%
+  ungroup() %>%
+  filter(MaxAbundance > 0.1) %>%
+  mutate(Assignment = str_remove(Assignment, "bacterium_")) %>%
+  ggplot(aes(SampleLabel, Assignment, fill=Abundance)) +
+  geom_tile(color="grey40", size=0.4) + 
+  scale_fill_gradientn(colors=abundance_palette, values=abundance_breaks) +
+  labs(x="", y="") +
+  coord_equal() +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    strip.text.y = element_blank(),
+    strip.background = element_blank(),
+    axis.text.x = element_text(angle=90, hjust=1, vjust=0.4))
+ggsave("igram_meconium_ggheatmap_1m.pdf", width=15, height=9)
+ggsave("igram_meconium_figS2C.pdf", width=15, height=9)
+ggsave("igram_meconium_revision_figS2C.pdf", width=15, height=9)
+ggsave("igram_meconium_revision_figS2C.png", width=15, height=9, dpi=300)
+
+```
+
+## Negative controls
+
+```{r}
+remove_and_renormalize <- function (x, a, to_remove) {
+  is_removed <- a %in% to_remove
+  sum_removed <- sum(x[is_removed])
+  x[!is_removed] <- x[!is_removed] / (1 - sum_removed)
+  x[is_removed] <- 0
+  x
+}
+mp_heatmap_data_ctrl <- mp_heatmap_data %>%
+  filter(
+    is.na(SubjectID), 
+    !grepl("s158", SampleID), 
+    !grepl("Mock", SampleID)) %>%
+  group_by(SampleID) %>%
+  mutate(Abundance = remove_and_renormalize(Abundance, Assignment, c(
+    "Vibrio campbellii", "Enterobacteria phage_lambda"))) %>%
+  mutate(SampleLabel = format_sample_label(SampleID)) %>%
+  ungroup()
+mp_heatmap_data_ctrl %>%
+  group_by(Species) %>%
+  mutate(MaxAbundance = max(Abundance)) %>%
+  ungroup() %>%
+  filter(MaxAbundance > 0.1) %>%
+  ggplot(aes(SampleLabel, Assignment, fill=Abundance)) +
+  geom_tile(color="grey40", size=0.4) + 
+  scale_fill_gradientn(colors=abundance_palette, values=abundance_breaks) +
+  labs(x="", y="") +
+  coord_equal() +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    strip.text.y = element_blank(),
+    strip.background = element_blank(),
+    axis.text.x = element_text(angle=90, hjust=1, vjust=0.4))
+ggsave("igram_meconium_ggheatmap_ctrl.pdf", width=6, height=5)
+ggsave("igram_meconium_revision_figS8A.pdf", width=6, height=5)
+ggsave("igram_meconium_revision_figS8A.png", width=6, height=5, dpi=300)
+```
+
+```{r}
+mp_ctrl_prevalence <- mp_heatmap_data_ctrl %>%
+  filter(Abundance > 0) %>%
+  count(Assignment, sort= TRUE)
+mp_ctrl_prevalence
+```
+
+
+### Compare to birth
+
+```{r}
+birth_ctrl_palette <- c("#1F77B4", "#EE4C97")
+mp_heatmap_data_birth_ctrl <- bind_rows(
+  mp_heatmap_data_birth, mp_heatmap_data_ctrl) %>%
+  mutate(UnassignedTaxa = Assignment %in% "No assignments") %>%
+  group_by(SampleID) %>%
+  mutate(SumUnassigned = sum(Abundance[UnassignedTaxa])) %>%
+  filter(SumUnassigned == 0) %>%
+  ungroup() %>%
+  mutate(SampleCtl = ifelse(is.na(Visit), "Negative\ncontrol", "Birth")) %>%
+  mutate(SampleCtl = fct_relevel(SampleCtl, "Birth"))
+birth_ctrl_matrix <- mp_heatmap_data_birth_ctrl %>%
+  usedist::pivot_to_numeric_matrix(
+    Assignment, SampleID, Abundance) %>%
+  sweep(., 2, colSums(.), "/") 
+birth_ctrl_jacc <- birth_ctrl_matrix %>%
+  t() %>%
+  dist(method = "binary")
+pc <- ape::pcoa(birth_ctrl_jacc)
+pc_pct <- round(pc$values$Relative_eig * 100)
+
+mp_heatmap_data_birth_ctrl %>%
+  distinct(SampleID, SampleCtl) %>%
+  bind_cols(., as.data.frame(pc$vectors[.$SampleID,1:3])) %>%
+  ggplot() +
+  geom_point(aes(x=Axis.1, y=Axis.2, color=SampleCtl)) +
+  scale_color_manual(values=birth_ctrl_palette) +
+  labs(
+    color="",
+    x=paste0("PCoA axis 1 (", pc_pct[1], "%)"),
+    y=paste0("PCoA axis 2 (", pc_pct[2], "%)")) +
+  ggtitle("Jaccard distance") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave("igram_meconium_revision_figS8B.pdf", width=4.6, height=3, useDingbats=FALSE)
+ggsave("igram_meconium_revision_figS8B.png", width=4.6, height=3, dpi=300)
+```
+
+```{r}
+mp_heatmap_data_birth_ctrl %>%
+  distinct(SampleID, SampleCtl) %>%
+  count(SampleCtl)
+```
+
+
+```{r}
+mp_heatmap_data_birth_ctrl %>%
+  group_by(Assignment, SampleCtl) %>%
+  summarize(FracPresent = mean(Abundance > 0)) %>%
+  ungroup() %>%
+  group_by(Assignment) %>%
+  filter(FracPresent[!(SampleCtl %in% "Birth")] > 0.2) %>%
+  ungroup() %>%
+  ggplot() +
+  geom_point(aes(x=Assignment, y=FracPresent, color=SampleCtl)) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  scale_color_manual(values = birth_ctrl_palette) +
+  coord_flip() +
+  labs(x="", y="Fraction of samples present", color="") +
+  theme_bw()
+ggsave("igram_meconium_revision_figS8D.pdf", width=6, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS8D.png", width=6, height=3, dpi=300)
+```
+
+
+```{r}
+birth_ctrl_richness <- mp_heatmap_data_birth_ctrl %>%
+  group_by(SampleID, SampleCtl, SampleLabel) %>%
+  summarize(Richness = sum(Abundance > 0)) %>%
+  ungroup()
+birth_ctrl_jacc_centroids <- birth_ctrl_jacc %>%
+  dist_subset(birth_ctrl_richness$SampleID) %>%
+  usedist::dist_to_centroids(birth_ctrl_richness$SampleCtl) %>%
+  rename(SampleID = Item) %>%
+  filter(CentroidGroup %in% "Negative\ncontrol") %>%
+  left_join(birth_ctrl_richness, by="SampleID")
+centroid95 <- birth_ctrl_jacc_centroids %>%
+  filter(SampleCtl %in% "Negative\ncontrol") %>%
+  with(ecdf(CentroidDistance)) %>%
+  quantile(0.95)
+  
+birth_ctrl_jacc_centroids %>%
+  mutate(SampleLabel = fct_reorder(SampleLabel, CentroidDistance)) %>%
+  ggplot() +
+  geom_point(aes(x=SampleLabel, y=CentroidDistance, color=SampleCtl)) +
+  geom_hline(yintercept=centroid95, linetype="dashed", color="#666666") +
+  coord_flip() +
+  facet_grid(SampleCtl ~ ., scales="free_y", space="free_y") +
+  scale_color_manual(values = birth_ctrl_palette, guide=F) +
+  labs(x="", y="Jaccard distance to centroid\nof negative control samples") +
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(size=6),
+    strip.background = element_blank(), 
+    strip.text.y = element_text(angle=0))
+ggsave("igram_meconium_revision_figS8C.pdf", width=6, height=10, useDingbats=F)
+ggsave("igram_meconium_revision_figS8C.png", width=6, height=10, dpi=300)
+```
+
+
+## Stacked bars
+
+```{r}
+stackedbar_colors <- c(
+  "#023fa5", "#7d87b9", "#bec1d4", "#d6bcc0", "#bb7784", "#8e063b",
+  "#4a6fe3", "#8595e1", "#b5bbe3", "#e6afb9", "#e07b91", "#d33f6a",
+  "#11c638", "#8dd593", "#c6dec7", "#ead3c6", "#f0b98d", "#ef9708",
+  "#0fcfc0", "#9cded6", "#d5eae7", "#f3e1eb", "#f6c4e1", "#f79cd4",
+  "#cccccc", "#999999", "#666666", "#333333")
+mp_stackedbar_data <- mp_heatmap_data %>%
+  group_by(SampleID) %>%
+  mutate(Abundance = remove_and_renormalize(Abundance, Assignment, c(
+    "Vibrio campbellii", "Enterobacteria phage_lambda"))) %>%
+  ungroup() %>%
+  filter(!(Visit %in% "4 month")) %>%
+  filter(!((SampleType %in% "STL") & (is.na(Visit)))) %>%
+  filter(!(SampleID %in% "s158.STL.V02_1mo.2")) %>%
+  mutate(SampleID = str_remove(SampleID, "^sNA.")) %>%
+  group_by(SampleID) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>% 
+  ungroup() %>%
+  filter(!(SampleType %in% "MockDNA")) %>%
+  mutate(Genus = str_remove(Genus, "_noname$")) %>%
+  mutate(Phylum = str_remove(Phylum, "_noname$")) %>%
+  mutate(GenusLabel = ifelse(
+    is.na(Phylum), Kingdom, paste(Phylum, "-", Genus))) %>% 
+  mutate(GenusLabel = str_replace(
+    GenusLabel, "unclassified", "No assignments"))
+mp_stackedbar_taxa <- mp_stackedbar_data %>%
+  group_by(GenusLabel) %>%
+  summarize(MaxAbundance = max(Abundance)) %>%
+  ungroup() %>%
+  arrange(desc(MaxAbundance)) %>%
+  filter(MaxAbundance > 0.5)
+```
+
+```{r}
+mp_stackedbar_data %>%
+  mutate(SampleLabel = ifelse(
+    is.na(Visit), SampleID, paste("Subject", str_remove(SubjectID, "-2$")))) %>%
+  mutate(SampleLabel = fct_reorder(SampleLabel, hrs_to_collection, na.rm=T)) %>%
+  mutate(VisitLabel = ifelse(
+    is.na(Visit), "Negative control", paste("Fecal -", Visit))) %>%
+  mutate(VisitLabel = str_replace(VisitLabel, "1 month", "One month")) %>%
+  mutate(VisitLabel = fct_relevel(VisitLabel, "Negative control")) %>%
+  mutate(GenusLabel = ifelse(
+    GenusLabel %in% mp_stackedbar_taxa$GenusLabel, GenusLabel, "Other")) %>%
+  mutate(GenusLabel = fct_relevel(
+    GenusLabel, "Ascomycota - Candida", 
+    "Other", "No assignments", after=Inf)) %>%
+  ggplot() +
+  geom_col(aes(x=SampleLabel, y=Abundance, fill=GenusLabel)) +
+  scale_fill_manual(values = stackedbar_colors) +
+  facet_grid(~ VisitLabel, scales = "free_x", space="free_x") +
+  labs(x="", fill="") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))
+ggsave("igram_meconium_stackedbars.pdf", width=27, height=6)
+ggsave("igram_meconium_revision_figS8E.pdf", width=27, height=6)
+ggsave("igram_meconium_revision_figS8E.png", width=27, height=6, dpi=300)
+```
+
+
+## Summary figure
+
+### Taxonomic assignments
+
+```{r}
+s0_ctrl_mpmatrix <- mp_tidy %>%
+  mutate(SampleID = str_replace(
+    SampleID, "sNA.DiaperBlank.NA", "sNA.DiaperBlank.1")) %>%
+  filter(SampleID %in% s0_ctrl$SampleID) %>%
+  group_by(SampleID, Kingdom, Phylum) %>%
+  summarize(Abundance = sum(Abundance)) %>%
+  ungroup() %>%
+  mutate(Phylum = str_remove(Phylum, "_noname$")) %>%
+  group_by(Kingdom, Phylum) %>%
+  mutate(MaxAbundance = max(Abundance)) %>%
+  ungroup() %>%
+  filter(MaxAbundance > ifelse(Kingdom %in% "Viruses", 0, 0.1)) %>%
+  mutate(PhylumLabel = ifelse(
+    is.na(Phylum), Kingdom, paste(Kingdom, "-", Phylum))) %>%
+  mutate(PhylumLabel = fct_recode(
+    PhylumLabel, 
+    "No assignments" = "unclassified",
+    "Fungi - Ascomycota" = "Ascomycota",
+    "Viruses" = "Viruses - Viruses")) %>%
+  mutate(PhylumLabel = fct_relevel(
+    PhylumLabel, "Fungi - Ascomycota", "No assignments", after=Inf)) %>%
+  mutate(PhylumLabel = fct_rev(PhylumLabel)) %>%
+  left_join(select(s0_ctrl, SampleID, SampleLabel), by="SampleID") %>%
+  select(SampleLabel, PhylumLabel, Abundance) %>%
+  df_to_matrix("SampleLabel", "PhylumLabel", "Abundance")
+s0_ctrl_mpmatrix <- s0_ctrl_mpmatrix[s0_ctrl$SampleLabel, 8:1]
+```
+
+```{r}
+s0_ctrl_taxa_annot <- s0_ctrl %>%
+  mutate(
+    `After 16h` = ifelse(`After 16h`, "After 16h", "Before 16h"),
+    Unexposed = fct_relevel(
+      ifelse(Unexposed, "Vaginal delivery, no antibiotics, breastfed", "Others"),
+      "Others", after=Inf),
+    `Mode of delivery` = fct_recode(`Mode of delivery`, "Vaginal delivery" = "SVD"),
+    HighHost = paste("Human DNA", ifelse(HighHost, ">", "<"), "75%")) %>%
+  select(
+    SampleLabel, 
+    #`Host DNA group` = HighHost,
+    `Collection group` = `After 16h`,
+    `Hours to collection` = hrs_to_collection,
+    Subgroup = Unexposed,
+    `Feeding in hospital` = feeding_in_hospital,
+    `Mode of delivery`,
+    `Postpartum antibiotics`,
+    `Intrapartum antibiotics`,
+    `Maternal weight`,
+    `Gestational age`,
+    `Sex`
+    ) %>%
+  as.data.frame() %>%
+  column_to_rownames("SampleLabel")
+```
+
+
+```{r}
+set.seed(32)
+pheatmap::pheatmap(
+  s0_ctrl_mpmatrix,
+  color=c("#FFFFFF", colorRampPalette(brewer.pal(5, "RdPu")[1:5])(99)),
+  annotation_row = s0_ctrl_taxa_annot,
+  cluster_rows = F, cluster_cols = F,
+  filename = "igram_meconium_revision_figS26_taxa.pdf",
+  cellwidth = 10, cellheight = 10)
+```
+
+### Sequencing info
+
+```{r}
+s0_ctrl_seq_matrix <- s0_ctrl %>%
+  select(SampleLabel, `Total reads`, `Non-host reads`) %>%
+  column_to_rownames("SampleLabel") %>%
+  as.data.frame() %>%
+  as.matrix()
+```
+
+
+```{r}
+s0_ctrl_seq_annot <- s0_ctrl %>%
+  mutate(HighHost = paste(
+    "Human DNA", ifelse(HighHost, ">", "<"), "75%")) %>%
+  select(
+    SampleLabel, 
+    
+    `Proportion of host reads`,
+    `Host DNA group` = HighHost,
+        `Mode of delivery`,
+    `Postpartum antibiotics`
+    ) %>%
+  as.data.frame() %>%
+  column_to_rownames("SampleLabel")
+```
+
+Remember to cut off two leftmost columns
+
+```{r}
+set.seed(32)
+pheatmap::pheatmap(
+  s0_ctrl_seq_matrix,
+  color=colorRampPalette(brewer.pal(6, "Oranges"))(50),
+  annotation_row = s0_ctrl_seq_annot,
+  cluster_rows = F, cluster_cols = F,
+  filename = "igram_meconium_revision_figS26_seq.pdf",
+  cellwidth = 10, cellheight = 10)
+```
+
+### Strain assembly
+
+```{r}
+s0_ctrl_strain_matrix <- s0_ctrl %>%
+  select(SampleLabel, starts_with("Assembled")) %>%
+  mutate_if(is.numeric, ~replace_na(., 0)) %>%
+  column_to_rownames("SampleLabel") %>%
+  as.data.frame() %>%
+  as.matrix()
+```
+
+```{r}
+set.seed(32)
+strain_colors <- c(
+  "#FFFFFF", 
+  ggsci::pal_material(palette = "light-blue")(10)[c(2, 5, 8)])
+pheatmap::pheatmap(
+  s0_ctrl_strain_matrix,
+  color=strain_colors,
+  cluster_rows = F, cluster_cols = F,
+  filename = "igram_meconium_revision_figS26_strain.pdf",
+  cellwidth = 10, cellheight = 10)
+```
+
+```{r}
+write_rds(s0_ctrl, "s0_ctrl.rds")
+```
+
+## Old heatmaps
+
+```{r warning=FALSE}
+neg_control_sample_ids <- grep(
+  "NegativeControl|Blank", colnames(mp), value = TRUE)
+neg_control_df <- data_frame(
+  SampleID = neg_control_sample_ids,
+  SampleType = sub("\\.(\\d|NA)$", "", sub("^sNA\\.", "", SampleID)))
+s0_heatmap <- s0 %>%
+  filter(!is.na(SampleID)) %>%
+  bind_rows(neg_control_df) %>%
+  left_join(s_clinical, by="SampleID") %>%
+  mutate(CopyNumOrder = ifelse(
+    is.na(copy_num_per_gram_feces), -5, copy_num_per_gram_feces)) %>%
+  arrange(CopyNumOrder, SampleType)
+mp0_clinical <- mp[,s0_heatmap$SampleID]
+annot <- s0_heatmap %>%
+  mutate(log_copy_num = log10(copy_num_per_gram_feces)) %>%
+  mutate(log_dna_conc = log10(dna_conc)) %>%
+  select(
+    `Sample type` = SampleType, 
+    `Log10(16S copies)`=log_copy_num,
+    `Hours to collection` = hrs_to_collection) %>%
+  as.data.frame()
+rownames(annot) <- s0_heatmap$SampleID
+otu_heatmap(
+  mp0_clinical, rownames(mp0_clinical), threshold=100,
+  annotation_col=annot,
+  breaks = c(0, 1e-10, seq(0.001, 1, length.out = 99)),
+  cluster_cols=FALSE, gaps_col=c(15,41),
+  clustering_distance_rows="binary",
+  filename="igram_meconium_qpcr_heatmap.pdf",
+  cellwidth=11, cellheight=11)
+```
+
+```{r}
+annot %>%
+  summarise_all(funs(min, max))
+```
+
+
+```{r warning=FALSE}
+s0_heatmap <- s0 %>%
+  filter(!is.na(SampleID)) %>%
+  left_join(s_clinical, by="SampleID") %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  arrange(hrs_to_collection)  
+mp0_clinical <- mp
+rownames(mp0_clinical) <- ifelse(
+  is.na(mp_taxa$Phylum), "No assignments", 
+  paste(mp_taxa$Phylum, mp_assignment, sep=": "))
+mp0_clinical <- mp0_clinical[mp_taxa$Kingdom %in% "Bacteria",]
+
+mp0_clinical <- mp0_clinical[,s0_heatmap$SampleID]
+
+mp0_colsums <- colSums(mp0_clinical)
+mp0_clinical <- sweep(mp0_clinical, 2, mp0_colsums, "/")
+mp0_clinical[,mp0_colsums < 1] <- 0
+
+mp0_rowstats <- apply(mp0_clinical, 1, max)
+mp0_clinical <- mp0_clinical[mp0_rowstats > .40,]
+
+mp0_clinical <- mp0_clinical[order(rownames(mp0_clinical)),]
+
+annot <- s0_heatmap %>%
+  mutate(NonHostProp = (1 - HostProp) * 100) %>%
+  mutate(log_copy_num = log10(copy_num_per_gram_feces)) %>%
+  select(
+    `Human DNA`=HostProp,
+    `Hours to collection` = hrs_to_collection) %>%
+  as.data.frame()
+rownames(annot) <- s0_heatmap$SampleID
+annot_colors <- list(
+  `Human DNA` = c("#FFFFFF", brewer.pal(9, "Greens")[2:7]),
+  `Hours to collection` = colorRampPalette(brewer.pal(9, "Purples")[1:9], bias=1.5)(100)
+)
+
+fig1_palette <- c("#FFFFFF",  
+    colorRampPalette(brewer.pal(9, "RdPu")[3:9])(99))
+fig1_breaks <- c(0, 1e-10, seq(0.001, 1, length.out = 98))
+
+pheatmap::pheatmap(
+  mp0_clinical,
+  annotation_col=annot,
+  annotation_colors = annot_colors,
+  color = fig1_palette,
+  breaks = c(0, 1e-10, seq(0.001, 1, length.out = 99)),
+  cluster_cols=FALSE, cluster_rows=FALSE,
+  gaps_col=32,
+  show_colnames=FALSE,
+  filename="igram_meconium_fig1A.pdf",
+  cellwidth=11, cellheight=11)
+```
+
+Prevalence info for Fig 1A
+
+```{r}
+mp0_clinical %>%
+  apply(1, function (x) mean(x > 0)) %>%
+  enframe("SpeciesLabel", "Prevalence") %>%
+  mutate(SpeciesLabel = fct_rev(fct_inorder(SpeciesLabel))) %>%
+  ggplot(aes(x=SpeciesLabel, y=Prevalence)) +
+  geom_col(fill="#777777") +
+  coord_flip() +
+  theme_classic() +
+  theme(
+    axis.line.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_blank())
+ggsave("igram_meconium_fig1A_prevalence.pdf", width=1.8, height = 3)
+```
+
+
+```{r}
+hmap_norm <- function (x) {
+  x <- ifelse(is.na(x), 0, x)
+  100 * x / sum(x)
+}
+s0_heatmap <- s0 %>%
+  filter(!is.na(SampleID)) %>%
+  left_join(s_clinical, by="SampleID")
+mp0_clinical <- mp[,s0_heatmap$SampleID]
+rownames(mp0_clinical) <- mp_assignment2
+mp0_heatmap <- apply(mp0_clinical, 2, hmap_norm)
+otu_heatmap(
+  mp0_heatmap, rownames(mp0_clinical), threshold=50,
+  breaks = c(0, 1e-10, seq(0.0001, 1, length.out = 97)),
+  color = saturated_rainbow(100),
+  cluster_rows=F, 
+  clustering_distance_rows="binary",
+  filename="igram_meconium_clustered_heatmap.pdf",
+  cellwidth=11, cellheight=11)
+```
+
+
+```{r warning=FALSE}
+neg_control_sample_ids <- grep(
+  "NegativeControl|Blank", colnames(mp), value = TRUE)
+neg_control_df <- data_frame(
+  SampleID = neg_control_sample_ids,
+  SampleType = sub("\\.(\\d|NA)$", "", sub("^sNA\\.", "", SampleID)))
+s0_heatmap <- bind_rows(
+  filter(s0, !is.na(SampleID)),
+  neg_control_df) %>%
+  left_join(s_clinical, by="SampleID") %>%
+  mutate(MyOrder = ifelse(
+    is.na(hrs_to_collection), -5, hrs_to_collection)) %>%
+  arrange(MyOrder, SampleType)
+mp0_clinical <- mp[,s0_heatmap$SampleID]
+annot <- s0_heatmap %>%
+  mutate(`Log10(16S copies)` = log10(copy_num_per_gram_feces)) %>%
+  select(
+    `Sample type` = SampleType, 
+    `Log10(16S copies)`,
+    `Hours to collection` = hrs_to_collection) %>%
+  as.data.frame()
+rownames(annot) <- s0_heatmap$SampleID
+otu_heatmap(
+  mp0_clinical, rownames(mp0_clinical), threshold=100,
+  annotation_col=annot,
+  breaks = c(0, 1e-10, seq(0.001, 1, length.out = 99)),
+  cluster_cols=FALSE, gaps_col=c(15),
+  clustering_distance_rows="binary",
+  filename="igram_meconium_qpcr_heatmap_hours.pdf",
+  cellwidth=11, cellheight=11)
+```
+
+```{r}
+mp0_stool <- mp[,s0_clinical$SampleID]
+mp0_stool_df <- mp0_stool %>%
+  reshape2:::melt.array(varnames=c("Taxon", "SampleID"), value.name = "Pct")
+mp0_stool_df %>%
+  group_by(Taxon) %>%
+  summarize(npos = sum(Pct > 0)) %>%
+  ungroup() %>%
+  arrange(desc(npos))
+```
+
+
+```{r}
+s0_heatmap_no16s <- s0_heatmap %>%
+  filter(is.na(copy_num_per_gram_feces))
+annot_no16s <- s0_heatmap_no16s %>%
+  mutate(LogNonHumanReads = log10(totalNonHumanReads)) %>%
+  select(
+    `Sample type` = SampleType,
+    `Log10(Non-host reads)` = LogNonHumanReads) %>%
+  as.data.frame()
+rownames(annot_no16s) <- s0_heatmap_no16s$SampleID
+mp0_clinical_no16s <- mp[,s0_heatmap_no16s$SampleID]
+otu_heatmap(
+  mp0_clinical_no16s, rownames(mp0_clinical_no16s), threshold=40,
+  annotation_col=annot_no16s,
+  breaks = c(0, 1e-10, seq(0.001, 1, length.out = 99)),
+  filename="igram_meconium_qpcr_heatmap_no16S.pdf",
+  cellwidth=11, cellheight=11)
+```
+
+# Strain-level results
+
+## Supplementary table
+
+```{r}
+strains %>% filter(StrainNum > 0) %>% count(Species, sort = TRUE)
+```
+
+
+```{r}
+strains_supplementary_table <- strains %>%
+  group_by(SampleID) %>%
+  mutate(HasAssembly = sum(StrainNum) > 0) %>%
+  mutate(Species = ifelse(HasAssembly, Species, c(NA, tail(Species, -1)))) %>%
+  filter(is.na(Species) | (StrainNum > 0)) %>%
+  ungroup() %>%
+  select(
+    SubjectID, hrs_to_collection, copy_num_per_gram_feces, 
+    Species, StrainNum, Status) %>%
+  arrange(hrs_to_collection, SubjectID, desc(StrainNum)) %>%
+  mutate(hrs_to_collection = sub(
+    "NA", "No data", sprintf("%1.2f", hrs_to_collection))) %>%
+  mutate(copy_num_per_gram_feces = sub(
+    "NA", "Below LOD", sprintf("%1.2e", copy_num_per_gram_feces))) %>%
+  mutate(Status = fct_recode(
+    Status,
+    `No complete genome` = "no complete",
+    `No contigs` = "no contig",
+    `No coding sequences` = "no hmm")) %>%
+  mutate(Status = fct_explicit_na(Status, "")) %>%
+  rename(
+    `Hours to collection` = hrs_to_collection,
+    `16S copy number per gram feces` = copy_num_per_gram_feces,
+    `Bacterial species` = Species,
+    `Number of strains` = StrainNum,
+    Notes = Status
+  )
+```
+
+```{r}
+write_csv(strains_supplementary_table, "strain_supplemental.csv")
+```
+
+```{r}
+strains %>%
+  group_by(SampleID) %>%
+  summarize(AnyStrains = any(StrainNum > 0)) %>%
+  ungroup() %>%
+  count(AnyStrains)
+```
+
+
+## Prevalence and timing
+
+```{r}
+strain_prevalence <- strains %>%
+  group_by(Species, Taxon) %>%
+  summarize(
+    NumSamples=sum(StrainNum > 0),
+    EarliestSample = min(hrs_to_collection[StrainNum > 0], na.rm=T)) %>%
+  ungroup() %>%
+  arrange(desc(NumSamples), Species) 
+```
+
+```{r}
+strains %>%
+  filter(Species %in% "Escherichia coli") %>%
+  count(StrainNum)
+strains %>%
+  count(StrainNum)
+```
+
+```{r}
+common_strains <- strain_prevalence %>% filter(NumSamples > 1)
+strain_prevalence %>%
+  ggplot(aes(x=EarliestSample, y=NumSamples)) +
+  geom_point(aes(color=Taxon)) +
+  geom_text_repel(
+    data=common_strains, 
+    mapping=aes(label=Species), 
+    force=3,
+    nudge_y = 0.1, fontface=3) +
+  scale_color_brewer(palette="Set1") +
+  labs(y="Total number of samples detected", x="Earliest time detected") +
+  theme_bw()
+ggsave("strain_occurrence_and_timing.pdf", width=8, height=5, useDingbats=FALSE)
+```
+
+
+```{r}
+phyla_colors <- c(
+  '#BC3C29', '#FC5A42', '#E18727', '#FFDC91', '#20854E',
+  '#7876B1', '#6F99AD', '#0072B5')
+strain_prevalence %>%
+  mutate(Species = fct_reorder(Species, -EarliestSample)) %>%
+  ggplot(aes(x=Species, y=EarliestSample, color=Taxon, width=NumSamples)) +
+  geom_segment(aes(xend=Species, yend=200), size=3) + 
+  coord_flip() +
+  labs(y="Earliest time detected", x="", color="") +
+  scale_color_manual(values = phyla_colors) +
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(face="italic"),
+    legend.text = element_text(face="italic"))
+ggsave("strain_timing.pdf", width=7, height=4, useDingbats=F)
+ggsave(
+  "igram_meconium_poster_straintime.png",
+  width=7, height=4, dpi=600)
+```
+
+```{r}
+strain_prevalence %>%
+  mutate(Species = fct_reorder(Species, -EarliestSample)) %>%
+  ggplot(aes(x=Species, y=NumSamples, color=Taxon)) +
+  geom_point() +
+  geom_segment(aes(xend=Species, yend=0)) +
+  labs(y="Total number of samples detected", x="", color="") +
+  coord_flip() +
+  scale_y_continuous(limits=c(0, 20)) +
+  scale_color_manual(values = phyla_colors) +
+  theme_bw() +
+  theme(axis.text.y = element_text(face="italic"))
+ggsave("strain_occurrence.pdf", width=7, height=4, useDingbats=F)
+```
+
+## Richness
+
+```{r}
+strain_richness <- strains %>%
+  group_by(SampleID) %>%
+  summarize(Richness = sum(StrainNum)) %>%
+  ungroup() %>%
+  left_join(s0_clinical, by="SampleID")
+```
+
+```{r}
+strain_richness %>%
+  ggplot() +
+  geom_point(aes(x=hrs_to_collection, y=Richness)) +
+  labs(x="Hours to sample collection", y="Number of bacterial strains\nconfirmed by full-genome analysis") +
+  geom_vline(xintercept=16, linetype="dashed") +
+  scale_y_continuous(breaks = 0:10) +
+  theme_bw()
+ggsave("strain_richness.pdf", width=4, height=3)
+```
+
+```{r}
+strain_richness %>%
+  mutate(StrainsPres = ifelse(Richness > 0, "Bacteria detected", "Bacteria not detected")) %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  ggplot() +
+  geom_point(aes(x=hrs_to_collection, y=Richness, color=StrainsPres)) +
+  labs(
+    x="Hours from birth",
+    y="Number of bacterial strains",
+    color="") +
+  scale_y_continuous(breaks = seq(0, 10, 2)) +
+  ggsci::scale_color_npg() +
+  theme_bw()
+ggsave("strain_richness_pres.png", width=6, height=3, dpi=300)
+```
+
+```{r}
+strain_richness %>%
+  lm(Richness ~ hrs_to_collection, data=.) %>%
+  summary()
+```
+
+## qPCR
+
+```{r}
+strain_assembly_qpcr <- strain_richness %>%
+  mutate(
+    HasAssembly = (Richness > 0), 
+    Detect16S = !is.na(copy_num_per_gram_feces)) %>%
+  with(table(HasAssembly, Detect16S))
+strain_assembly_qpcr
+fisher.test(strain_assembly_qpcr)
+```
+```{r}
+strain_richness %>%
+  filter(is.na(copy_num_per_gram_feces), Richness > 0) %>%
+  select(SubjectID, hrs_to_collection, Richness) %>%
+  arrange(hrs_to_collection)
+```
+
+```{r}
+strain_richness %>%
+  ggplot() +
+  geom_point(aes(x=copy_num_per_gram_feces, y=Richness)) +
+  scale_y_continuous(breaks = 0:10) +
+  scale_x_log10(
+    breaks=c(1e3, 1e5, 1e7, 1e9),
+    labels=parse(text=c("10^3", "10^5", "10^7", "10^9"))) +
+  labs(x="16S copy number per gram feces", y="Number of bacterial strains\nconfirmed by full-genome analysis") +
+  theme_bw()
+ggsave("strain_richness_qpcr.pdf", width=4, height=3)
+```
+
+```{r}
+strain_richness %>%
+  cor.test(~ Richness + log10(copy_num_per_gram_feces), data=., method="spearman")
+```
+```{r}
+strain_richness %>%
+  t.test(log10(copy_num_per_gram_feces) ~ (Richness > 0), data=.)
+```
+
+## Mode of delivery
+
+```{r}
+strains %>%
+  group_by(SampleID) %>%
+  summarize(Richness = sum(StrainNum)) %>%
+  left_join(s0_clinical, by="SampleID") %>%
+  lm(Richness ~ delivery_type_binary * hrs_to_collection, data=.) %>%
+  summary()
+strains %>%
+  group_by(SampleID) %>%
+  summarize(Richness = sum(StrainNum)) %>%
+  left_join(s0_clinical, by="SampleID") %>%
+  lm(Richness ~ delivery_type_binary + hrs_to_collection, data=.) %>%
+  summary()
+```
+
+```{r}
+strains %>%
+  group_by(SampleID) %>%
+  summarize(Richness = sum(StrainNum)) %>%
+  left_join(s0_clinical, by="SampleID") %>%
+  ggplot(aes(y=Richness, color=delivery_type_binary, x=hrs_to_collection)) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  theme_bw()
+```
+
+# KEGG results
+
+```{r}
+kegg_pathway_names <- read_tsv(
+  "revision_data/kegg/pathway.list", 
+  col_names=c("Pathway", "PathwayName"), comment="#", skip=2) %>%
+  mutate(Pathway = paste0("ko", Pathway))
+kegg_pathways <- read_tsv(
+  "revision_data/kegg/ko_pathway.list", 
+  col_names = c("Ortholog", "Pathway")) %>%
+  filter(str_detect(Pathway, ":ko")) %>%
+  mutate(Ortholog = str_remove(Ortholog, "^ko:")) %>%
+  mutate(Pathway = str_remove(Pathway, "^path:")) %>%
+  right_join(kegg_pathway_names, by="Pathway") %>%
+  group_by(Ortholog) %>%
+  mutate(Weight = 1 / n()) %>%
+  ungroup()
+```
+
+```{r}
+kegg <- read_tsv("data_igram_run1/20170316_igram_ko_assignments.txt") %>%
+  rename(Gene = Term) %>%
+  gather(SampleID, NumReads, -Gene) %>%
+  mutate(SampleID = sub("PCMP_", "", SampleID)) %>%
+  mutate(SampleID = sub("1-4d", "1.4d", SampleID)) %>%
+  group_by(SampleID) %>%
+  mutate(Proportion = NumReads / sum(NumReads)) %>%
+  ungroup() %>%
+  left_join(s, by="SampleID") %>%
+  filter(!(is.na(visit) & grepl("STL", SampleID)))
+```
+
+Check that only control samples have visit NA.
+
+```{r}
+kegg %>%
+  count(SampleID, visit) %>%
+  filter(is.na(visit))
+```
+
+```{r}
+kegg_stats <- kegg %>%
+  group_by(Gene, Visit) %>%
+  summarize_at(vars(Proportion), funs(
+    Mean=mean, Median=median, Prevalence = mean(. > 0))) %>%
+  ungroup()
+```
+
+## Glycoside hydrolase genes
+
+```{r}
+gh_genes <- kegg %>%
+  filter(grepl("EC:3.2.1", Gene))
+  
+cut_prevalence <- function (x) {
+  cut (
+    x, 
+    breaks = c(0, 0.25, 0.75, 1),
+    labels = paste("Prevalence", c("<25%", "25%-75%", ">75%")),
+    include.lowest = TRUE)  
+}
+
+gh_stats <- kegg_stats %>%
+  filter(grepl("EC:3.2.1", Gene)) %>%
+  mutate(PrevCategory = cut_prevalence(Prevalence))
+```
+
+```{r}
+gh_stats %>%
+  ggplot() +
+  geom_histogram(aes(x=Prevalence, fill=PrevCategory)) +
+  facet_wrap(~ Visit)
+```
+
+### Correlation at birth
+
+```{r}
+gh_genes_d0 <- gh_genes %>%
+  filter(Visit %in% "Birth")
+
+gh_cor_tests <- gh_stats %>%
+  filter(Visit %in% "Birth", Prevalence > 0.75) %>%
+  left_join(gh_genes_d0, by="Gene") %>%
+  left_join(s0_clinical, by="SampleID") %>%
+  group_by(Gene) %>%
+  do(tidy(cor.test(~ hrs_to_collection + Proportion, data=., method="spearman"))) %>%
+  mutate(fdr = p.adjust(p.value, method = "fdr"))
+```
+
+```{r}
+make_gene_label <- function (x) {
+  x %>%
+    str_replace(" ", "\n") %>%
+    str_replace(" \\[", "\n[")
+}
+gh_cor_tests %>%
+  filter(fdr < 0.05) %>%
+  mutate(GeneLabel = make_gene_label(Gene)) %>%
+  left_join(gh_genes_d0, by="Gene") %>%
+  left_join(s0_clinical, by="SampleID") %>%
+  ggplot(aes(x=hrs_to_collection, y=Proportion)) +
+  geom_point() +
+  geom_smooth(size=0.5) +
+  facet_wrap(~ GeneLabel, scales = "free_y", ncol=2) +
+  theme_bw()
+ggsave("igram_meconium_kegg_gh_cor.pdf", width=7, height=6)
+```
+
+### Compare visits
+
+```{r}
+gh_visit <- gh_genes %>%
+  filter(Visit %in% c("Birth", "1 month")) %>%
+  group_by(Gene, Visit) %>%
+  mutate(VisitPrevalence = mean(Proportion > 0)) %>%
+  ungroup() %>%
+  group_by(Gene) %>%
+  filter(max(VisitPrevalence) > 0.25) %>%
+  ungroup()
+```
+
+```{r}
+gh_richness <- gh_genes %>%
+  filter(Visit %in% c("Birth", "1 month")) %>%
+  group_by(SampleID, Visit, SubjectID) %>%
+  summarize(Richness = sum(Proportion > 0)) %>%
+  ungroup() 
+gh_richness %>%
+  ggplot() +
+  geom_boxplot(aes(x=Visit, y=Richness, fill=Visit)) +
+  scale_fill_d3(guide=FALSE) +
+  labs(x="", y="Number of glycoside hydrolase\ngene categories per sample") +
+  theme_bw()
+ggsave("igram_meconium_figS3A.pdf", width=2.6, height=3)
+```
+
+```{r}
+gh_richness %>%
+  t.test(Richness ~ Visit, data=.)
+gh_richness %>%
+  select(-SampleID) %>%
+  spread(Visit, Richness) %>%
+  with(t.test(Birth, `1 month`, paired = TRUE))
+gh_richness %>%
+  select(-SampleID) %>%
+  spread(Visit, Richness) %>%
+  with(wilcox.test(Birth, `1 month`, paired = TRUE))
+gh_richness %>% 
+  lmer(Richness ~ Visit + (1|SubjectID), data=.) %>%
+  summary()
+```
+
+```{r}
+gh_richness %>% count(Visit)
+```
+
+```{r}
+gh_stats <- gh_genes %>%
+  filter(Visit %in% c("Birth", "1 month")) %>%
+  group_by(SampleID, Visit, SubjectID) %>%
+  summarize(
+    Richness = sum(Proportion > 0), 
+    Abundance = sum(Proportion)) %>%
+  ungroup()
+visit_colors <- c("#1F77B4FF", "#FF7F0EFF")
+gh_stats %>%
+  mutate(Visit = fct_rev(Visit)) %>%
+  gather(Measure, Value, Richness, Abundance) %>%
+  mutate(Measure = fct_relevel(Measure, "Richness")) %>%
+  mutate(Measure = fct_recode(
+    Measure, 
+    `Number of classes identified per sample` = "Richness",
+    `Total abundance in sample` = "Abundance")) %>%
+  ggplot() +
+  geom_boxplot(aes(x=Visit, y=Value, fill=Visit)) +
+  scale_fill_manual(values=rev(visit_colors), guide=FALSE) +
+  coord_flip() +
+  facet_wrap(~ Measure, scales="free", ncol=1) +
+  labs(x="", y="Glycoside hydrolase gene orthologs") +
+  theme_bw() +
+  theme(strip.background = element_blank())
+ggsave("igram_meconium_revision_figS3C.pdf", width=4, height=3.5, useDingbats=F)
+ggsave("igram_meconium_revision_figS3C.png", width=4, height=3.5, dpi=300)
+
+```
+
+```{r}
+gh_stats %>%
+  t.test(Abundance ~ Visit, data=.)
+gh_stats %>%
+  select(-SampleID, -Richness) %>%
+  spread(Visit, Abundance) %>%
+  with(t.test(Birth, `1 month`, paired = TRUE))
+gh_stats %>%
+  select(-SampleID, -Richness) %>%
+  spread(Visit, Abundance) %>%
+  with(wilcox.test(Birth, `1 month`, paired = TRUE))
+gh_stats %>% 
+  lmer(Abundance ~ Visit + (1|SubjectID), data=.) %>%
+  summary()
+```
+
+```{r}
+gh_stats %>% count(Visit)
+```
+
+```{r}
+gh_visit_tests <- gh_visit %>%
+  select(SubjectID, Visit, Gene, Proportion) %>%
+  spread(Visit, Proportion, fill = 0) %>%
+  group_by(Gene) %>%
+  do(with(., tidy(wilcox.test(`Birth`, `1 month`, paired = TRUE)))) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+```
+
+```{r}
+gh_visit_tests %>%
+  count(fdr < 0.05)
+```
+
+```{r}
+gh_visit %>%
+  right_join(gh_visit_tests, by="Gene") %>%
+  filter(fdr < 0.05) %>%
+  group_by(Gene, Visit) %>%
+  do(tidy(t(quantile(.$Proportion)))) %>%
+  ungroup() %>% 
+  rename(q25 = `X25.`, q50 = `X50.`, q75=`X75.`) %>%
+  select(Gene, Visit, q25, q50, q75) %>%
+  mutate(Gene = fct_reorder(Gene, q50, max)) %>%
+  ggplot(aes(x=Gene, color=Visit)) +
+  geom_point(aes(y=q50), position=position_dodge(width=0.9)) +
+  geom_errorbar(aes(ymin=q25, ymax=q75), position=position_dodge(width=0.9)) +
+  scale_y_log10() +
+  scale_color_d3() +
+  labs(x="", y="Proportion (log scale)", color="") +
+  coord_flip() +
+  theme_bw()
+ggsave("igram_meconium_figS3B.pdf", width=10, height=9)
+```
+
+```{r}
+gh_visit_increasing <- gh_visit %>%
+  right_join(gh_visit_tests, by="Gene") %>%
+  filter(fdr < 0.05) %>%
+  select(SubjectID, visit, Gene, Proportion) %>%
+  spread(visit, Proportion, fill=0) %>%
+  filter(!((`1_month_baby` == 0) & (`birth` == 0))) %>%
+  mutate(Increased = (`1_month_baby` - `birth`) > 0) %>%
+  group_by(Gene) %>%
+  summarize(FracIncreased = mean(Increased))
+```
+
+```{r}
+gh_visit_increasing %>%
+  count(FracIncreased > 0.50)
+```
+
+Higher at birth:
+
+  * K01185 lysozyme [EC:3.2.1.17] (phage?)
+  * K01183 chitinase [EC:3.2.1.14]
+  * K08309 soluble lytic murein transglycosylase [EC:3.2.1.−] (E. coli)
+  * K08309 soluble lytic murein transglycosylase [EC:3.2.1.-]
+
+
+## Birth samples
+
+```{r}
+birth_kegg_data <- kegg %>%
+  filter(Visit %in% "Birth") %>%
+  select(Gene, SampleID, Proportion) %>%
+  inner_join(s0_clinical) %>%
+  group_by(Gene) %>%
+  filter(sum(Proportion > 0) > 5) %>%
+  ungroup()
+```
+
+### Richness
+
+```{r}
+birth_kegg_richness <- birth_kegg_data %>%
+  left_join(mp_richness, by="SampleID") %>%
+  group_by(Gene) %>%
+  do(tidy(cor.test(
+    ~ Proportion + Richness, data=., 
+    method="spearman", alternative="greater"))) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+```
+
+```{r}
+birth_kegg_data %>% count(Gene)
+```
+
+```{r}
+birth_kegg_richness %>%
+  ggplot(aes(x=fdr)) +
+  geom_histogram(aes(y=cumsum(..count..)), binwidth=0.1, boundary=0) +
+  geom_vline(xintercept=c(0.001, 0.01, 0.05)) +
+  scale_x_log10() +
+  theme_bw()
+```
+
+```{r}
+birth_kegg_richness_sig <- birth_kegg_richness %>%
+  filter(fdr < 1e-4)
+```
+
+```{r}
+birth_kegg_richness_props <- birth_kegg_richness_sig %>%
+  left_join(birth_kegg_data, by="Gene") %>%
+  left_join(mp_richness, by="SampleID") %>%
+  group_by(Gene) %>%
+  mutate(ProportionZ = scale(Proportion)) %>%
+  ungroup() %>%
+  df_to_matrix("Gene", "SubjectID", "ProportionZ")
+```
+
+```{r}
+first_word <- function (x) {
+  sapply(str_split(x, boundary("word")), `[`, 1)
+}
+subjects_by_collection <- s0_clinical %>%
+  arrange(hrs_to_collection) %>%
+  with(SubjectID)
+birth_mp_data <- mp_tidy %>%
+  right_join(s0_clinical, by="SampleID") %>%
+  filter(Visit %in% "Birth") %>%
+  select(1:11)
+birth_mp_sig_hrs_data <- birth_mp_data %>%
+  right_join(mp_taxa_hrs_sig, by="Assignment") %>%
+  select(Assignment, SampleID, PctAbundance) %>%
+  spread(Assignment, PctAbundance)
+birth_kegg_annotations <- s0_clinical %>%
+  filter(Visit %in% "Birth") %>%
+  left_join(mp_richness, by="SampleID") %>%
+  mutate(LogRichness = log10(Richness + 0.1)) %>%
+  mutate(LogHours = log10(hrs_to_collection)) %>%
+  select(
+    SampleID, 
+    `Hours to collection` = hrs_to_collection,
+    `Mode of delivery` = delivery_type,
+    `Intrapartum antibiotics` = intrapartum_antibiotics,
+    `Postpartum antibiotics` = infant_on_antibiotics,
+    `Feeding in hospital` = feeding_in_hospital) %>%
+  #left_join(birth_mp_sig_hrs_data, by="SampleID") %>%
+  as.data.frame() %>%
+  column_to_rownames("SampleID")
+birth_kegg_row_annotations <- data_frame(
+  KeggID = rownames(birth_kegg_richness_props)) %>%
+  mutate(Ortholog = first_word(KeggID)) %>%
+  left_join(kegg_pathways, by="Ortholog") %>%
+  mutate(PathwayName = fct_lump(
+    PathwayName, 19, ties.method = "first")) %>%
+  mutate(PathwayName = replace_na(PathwayName, "Other")) %>%
+  select(KeggID, PathwayName) %>%
+  mutate(Present = 1) %>%
+  distinct() %>%
+  spread(PathwayName, Present, fill=0) %>%
+  select(-Other) %>%
+  mutate(
+    `Glycoside hydrolase` = as.numeric(str_detect(KeggID, fixed("3.2.1.")))) %>%
+  as.data.frame() %>%
+  column_to_rownames("KeggID")
+dark_colors <- ggsci::pal_d3("category20b")(20)
+birth_kegg_annotation_colors <- lapply(
+  dark_colors, function (x) c("#FFFFFF", x))
+names(birth_kegg_annotation_colors) <- colnames(
+  birth_kegg_row_annotations)
+```
+
+```{r}
+birth_kegg_richness_props[,subjects_by_collection] %>%
+  pheatmap::pheatmap(
+    cellwidth=10, cellheight=3,
+    show_rownames = FALSE, show_colnames = TRUE,
+    cluster_cols = F,
+    annotation_col = birth_kegg_annotations,
+    annotation_row = birth_kegg_row_annotations,
+    annotation_colors = birth_kegg_annotation_colors,
+    filename="igram_meconium_revision_figS1B.pdf")
+```
+
+```{r}
+birth_kegg_richness_props %>%
+  #apply(1, scale) %>%
+  #t() %>%
+  pheatmap::pheatmap(
+    cellwidth=10, cellheight=10,
+    filename="igram_meconium_kegg_richness_heatmap.pdf")
+```
+
+### Taxa
+
+```{r}
+birth_mp_data <- mp_tidy %>%
+  right_join(s0_clinical, by="SampleID") %>%
+  filter(Visit %in% "Birth") %>%
+  select(1:11)
+birth_mp_common_taxa <- birth_mp_data %>%
+  filter(Abundance > 0) %>%
+  count(Assignment, sort=TRUE) %>%
+  filter(n >= 10) %>%
+  rename(NumSamplesWithTaxon = `n`)
+```
+
+```{r}
+test_gene_taxon <- function (gene, taxon) {
+  mp_taxon <- birth_mp_data %>%
+    filter(Assignment %in% taxon)
+  birth_kegg_data %>%
+    filter(Gene %in% gene) %>%
+    left_join(mp_taxon, by="SampleID") %>%
+    cor.test(
+      ~ Proportion + Abundance, data=., 
+      method="spearman", alternative="greater") %>%
+    tidy()
+}
+```
+
+```{r eval=FALSE}
+birth_kegg_taxa <- crossing(
+  Gene=birth_kegg_richness_sig$Gene, 
+  Assignment=birth_mp_common_taxa$Assignment) %>%
+  group_by_all() %>%
+  do(test_gene_taxon(.$Gene, .$Assignment)) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+```
+
+```{r}
+birth_kegg_taxa_sig <- birth_kegg_taxa %>%
+  filter(p.value < 0.05)
+```
+
+```{r}
+library(ggrepel)
+birth_kegg_taxa_sig_cts <- birth_kegg_taxa_sig %>%
+  count(Assignment, sort=TRUE) %>%
+  rename(NumCorrelatedGenes = `n`) %>%
+  left_join(birth_mp_common_taxa, by="Assignment")
+birth_kegg_taxa_sig_cts %>%
+  ggplot(aes(x=NumSamplesWithTaxon, y=NumCorrelatedGenes)) +
+  geom_point() +
+  geom_text_repel(aes(label=Assignment)) +
+  scale_x_continuous(limits = c(0, 45)) +
+  labs(
+    x="Number of birth fecal samples with taxon (MetPhlAn2)",
+    y="Number of KEGG genes correlated with taxon (Spearman)") +
+  theme_bw()
+ggsave("igram_meconium_kegg_taxa_genes.pdf", width=7, height=7)
+ggsave("igram_meconium_revision_figS1C.pdf", width=7, height=7)
+ggsave("igram_meconium_revision_figS1C.png", width=7, height=7, dpi=300)
+```
+
+```{r}
+library(UpSetR)
+birth_kegg_taxa_list <- birth_kegg_taxa_sig %>%
+  select(Gene, Assignment) %>%
+  split(., .$Assignment) %>%
+  lapply(., function (df) df$Gene)
+mp_taxa_phylum <- mp_tidy %>%
+  select(Assignment, Phylum) %>%
+  distinct()
+phylum_palette <- data_frame(
+  Phylum = c("Actinobacteria", "Bacteroidetes", "Firmicutes", "Proteobacteria"),
+  Color = ggsci::pal_aaas()(4))
+birth_kegg_taxa_colors <- data_frame(
+  Assignment = names(birth_kegg_taxa_list), 
+  NumGenes = sapply(birth_kegg_taxa_list, length)) %>%
+  left_join(mp_taxa_phylum, by="Assignment") %>%
+  left_join(phylum_palette) %>%
+  arrange(desc(NumGenes))
+```
+
+```{r}
+pdf("igram_meconium_kegg_taxa_upset.pdf")
+upset(
+  fromList(birth_kegg_taxa_list), 
+  nsets = 50, order.by = "freq",
+  #mainbar.y.label = "Number of shared KEGG genes",
+  nintersects = 41,
+  sets.x.label = "Number of KEGG genes correlated\nwith taxon abundance",
+  sets.bar.color = birth_kegg_taxa_colors$Color)
+dev.off()
+```
+
+```{r}
+pdf("igram_meconium_revision_figS1D.pdf")
+upset(
+  fromList(birth_kegg_taxa_list), 
+  nsets = 50, order.by = "freq",
+  #mainbar.y.label = "Number of shared KEGG genes",
+  nintersects = 41,
+  sets.x.label = "Number of KEGG genes correlated\nwith taxon abundance",
+  sets.bar.color = birth_kegg_taxa_colors$Color)
+dev.off()
+```
+
+```{r}
+png("igram_meconium_revision_figS1D.png", height=7 * 300, width=7.5 * 300, res = 300)
+upset(
+  fromList(birth_kegg_taxa_list), 
+  nsets = 50, order.by = "freq",
+  #mainbar.y.label = "Number of shared KEGG genes",
+  nintersects = 41,
+  sets.x.label = "Number of KEGG genes correlated\nwith taxon abundance",
+  sets.bar.color = birth_kegg_taxa_colors$Color)
+dev.off()
+```
+
+## Compare visits (Fig S4)
+
+```{r}
+kegg_visit <- kegg %>%
+  filter(Visit %in% c("Birth", "1 month")) %>%
+  group_by(Gene, Visit) %>%
+  mutate(VisitPrevalence = mean(Proportion > 0)) %>%
+  ungroup() %>%
+  group_by(Gene) %>%
+  filter(max(VisitPrevalence) > 0.25) %>%
+  ungroup()
+```
+
+```{r}
+kegg_richness <- kegg %>%
+  filter(Visit %in% c("Birth", "1 month")) %>%
+  group_by(SampleID, Visit, SubjectID) %>%
+  summarize(Richness = sum(Proportion > 0)) %>%
+  ungroup() 
+kegg_richness %>%
+  ggplot() +
+  geom_boxplot(aes(x=Visit, y=Richness, fill=Visit)) +
+  scale_fill_d3(guide=FALSE) +
+  labs(x="", y="Number of KEGG orthologs\nper sample") +
+  theme_bw()
+ggsave("igram_meconium_revision_figS3A.pdf", width=2.6, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS3A.png", width=2.6, height=3, dpi=300)
+```
+
+```{r}
+kegg_richness %>%
+  t.test(Richness ~ Visit, data=.)
+kegg_richness %>%
+  select(-SampleID) %>%
+  spread(Visit, Richness) %>%
+  with(t.test(Birth, `1 month`, paired = TRUE))
+kegg_richness %>%
+  select(-SampleID) %>%
+  spread(Visit, Richness) %>%
+  with(wilcox.test(Birth, `1 month`, paired = TRUE))
+kegg_richness %>% 
+  lmer(Richness ~ Visit + (1|SubjectID), data=.) %>%
+  summary()
+```
+
+```{r}
+kegg_visit_tests <- kegg_visit %>%
+  select(SubjectID, Visit, Gene, Proportion) %>%
+  spread(Visit, Proportion, fill = 0) %>%
+  group_by(Gene) %>%
+  do(with(., tidy(wilcox.test(
+    `Birth`, `1 month`, paired = TRUE, 
+    alternative = "less")))) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+```
+
+```{r}
+kegg_visit_tests %>%
+  count(fdr < 3e-8)
+```
+
+```{r}
+kegg_visit %>%
+  right_join(kegg_visit_tests, by="Gene") %>%
+  filter(fdr < 3e-8) %>%
+  group_by(Gene, Visit) %>%
+  do(tidy(t(quantile(.$Proportion)))) %>%
+  ungroup() %>% 
+  rename(q25 = `X25.`, q50 = `X50.`, q75=`X75.`) %>%
+  select(Gene, Visit, q25, q50, q75) %>%
+  mutate(Gene = fct_reorder(Gene, q50, max)) %>%
+  mutate(IsGH = ifelse(
+    str_detect(Gene, fixed("EC:3.2.1.")), "Glycoside hydrolase genes", "Other gene types")) %>%
+  ggplot(aes(x=Gene, color=Visit, shape=IsGH), fill="#FFFFFF") +
+  geom_point(
+    aes(y=q50), 
+    position=position_dodge(width=0.9)) +
+  geom_errorbar(
+    aes(ymin=q25, ymax=q75), 
+    position=position_dodge(width=0.9)) +
+  scale_y_log10() +
+  scale_color_d3() +
+  scale_shape_manual(values=c(21,19)) +
+  labs(x="", y="Proportion (log scale)", color="", shape="") +
+  coord_flip() +
+  theme_bw()
+ggsave("igram_meconium_revision_figS3B.pdf", width=11, height=13, useDingbats=F)
+ggsave("igram_meconium_revision_figS3B.png", width=11, height=13, dpi=300)
+```
+
+## Breastfeeding (Fig S5)
+
+```{r}
+kegg_bf_tests <- kegg %>%
+  right_join(
+    select(s_bf, SampleID, BreastfedAny, BreastfedLabel), 
+    by="SampleID") %>%
+  group_by(Gene, Visit) %>%
+  filter(mean(Proportion > 0) > 0.5) %>%
+  do(tidy(wilcox.test(Proportion ~ BreastfedAny, data=.))) %>%
+  ungroup()
+```
+
+```{r}
+kegg_bf_tests <- kegg_bf_tests %>%
+  group_by(Visit) %>%
+  mutate(fdr = p.adjust(p.value, method="fdr")) %>%
+  ungroup() %>% 
+  arrange(fdr)
+```
+
+```{r}
+kegg_bf_plotdata <- kegg_bf_tests %>%
+  filter(fdr < 0.05) %>%
+  arrange(fdr) %>%
+  slice(1:50) %>%
+  select(Gene) %>%
+  left_join(kegg, by="Gene") %>%
+  inner_join(
+    select(s_bf, SampleID, BreastfedAny), by="SampleID") %>%
+  group_by(Gene, Visit, BreastfedAny) %>%
+  summarize(
+    Q50 = median(Proportion), 
+    Q25 = quantile(Proportion, 0.25),
+    Q75 = quantile(Proportion, 0.75)) %>%
+  ungroup()
+
+```
+
+
+```{r}
+kegg_bf_plotlabels <- kegg_bf_tests %>%
+  filter(fdr < 0.05) %>%
+  arrange(fdr) %>%
+  slice(1:50) %>%
+  mutate(FdrLabel = paste("P =", round(fdr, 3)))
+kegg_bf_plotdata %>%
+  mutate(Gene = fct_reorder(Gene, Q50)) %>%
+  ggplot(aes(x=Gene)) +
+  geom_point(
+    aes(y=Q50, color=BreastfedAny), 
+    position=position_dodge(width=0.9)) +
+  geom_errorbar(
+    aes(ymin=Q25, ymax=Q75, color=BreastfedAny), 
+    position=position_dodge(width=0.9)) +
+  geom_text(
+    aes(y=0.6, label=FdrLabel), hjust=1, size=3, color="#666666",
+    data=kegg_bf_plotlabels) +
+  facet_grid(~ Visit) +
+  coord_flip() +
+  labs(x="", y="Proportion (log scale)", color="") +
+  scale_y_log10() +
+  scale_color_manual(values = bf_colors) +
+  theme_bw() +
+  theme(strip.background = element_blank())
+ggsave("igram_meconium_revision_figS5E.pdf", width=12, height=8, useDingbats=F)
+ggsave("igram_meconium_revision_figS5E.png", width=12, height=8, dpi=300)
+```
+
+## Mode of birth (Fig S4)
+
+```{r}
+frac_nonzero <- function (x) {
+  sum(x > 0) / length(x)
+}
+kegg_birth_tests <- kegg %>%
+  mutate(delivery_type_binary = str_extract(
+    delivery_type, "C-Section|SVD")) %>%
+  mutate(delivery_type_binary = fct_relevel(
+    delivery_type_binary, "SVD")) %>%
+  mutate(delivery_type_binary = fct_recode(
+    delivery_type_binary, `Vaginal delivery` = "SVD")) %>%
+  filter(Visit %in% c("Birth", "1 month")) %>%
+  group_by(Gene, Visit) %>%
+  filter(frac_nonzero(Proportion) > 0.5) %>%
+  do(tidy(wilcox.test(Proportion ~ delivery_type_binary, data=.))) %>%
+  ungroup()
+kegg_birth_tests <- kegg_birth_tests %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+```
+
+```{r}
+kegg_birth_plotdata <- kegg_birth_tests %>%
+  filter(fdr < 0.05) %>%
+  arrange(fdr) %>%
+  slice(1:50) %>%
+  select(Gene) %>%
+  left_join(kegg, by="Gene") %>%
+  inner_join(
+    select(s01, SampleID, delivery_type_binary), by="SampleID") %>%
+  group_by(Gene, Visit, delivery_type_binary) %>%
+  summarize(
+    Q50 = median(Proportion), 
+    Q25 = quantile(Proportion, 0.25),
+    Q75 = quantile(Proportion, 0.75)) %>%
+  ungroup()
+kegg_birth_plotlabels <- kegg_birth_tests %>%
+  filter(fdr < 0.05) %>%
+  arrange(fdr) %>%
+  slice(1:50) %>%
+  mutate(FdrLabel = paste("P =", round(fdr, 3)))
+kegg_birth_plotdata %>%
+  mutate(Gene = fct_reorder(Gene, Q50)) %>%
+  ggplot(aes(x=Gene)) +
+  geom_point(
+    aes(y=Q50, color=delivery_type_binary), 
+    position=position_dodge(width=0.9)) +
+  geom_errorbar(
+    aes(ymin=Q25, ymax=Q75, color=delivery_type_binary), 
+    position=position_dodge(width=0.9)) +
+  geom_text(
+    aes(y=0.6, label=FdrLabel), hjust=1, size=3, color="#666666",
+    data=kegg_birth_plotlabels) +
+  facet_grid(~ Visit) +
+  coord_flip() +
+  labs(x="", y="Proportion (log scale)", color="") +
+  scale_y_log10() +
+  scale_color_manual(values = delivery_palette) +
+  theme_bw() +
+  theme(strip.background = element_blank())
+ggsave("igram_meconium_revision_figS4D.pdf", width=12, height=8, useDingbats=F)
+ggsave("igram_meconium_revision_figS4D.png", width=12, height=8, dpi=300)
+```
+
+```{r}
+kegg %>%
+  mutate(delivery_type_binary = str_extract(
+    delivery_type, "C-Section|SVD")) %>%
+  mutate(delivery_type_binary = fct_relevel(
+    delivery_type_binary, "SVD")) %>%
+  mutate(delivery_type_binary = fct_recode(
+    delivery_type_binary, `Vaginal delivery` = "SVD")) %>%
+  filter(Visit %in% c("Birth", "1 month")) %>%
+  group_by(Gene, Visit) %>%
+  filter(frac_nonzero(Proportion) > 0.5) %>%
+  ungroup() %>%
+  count(Gene, Visit, delivery_type_binary)
+```
+
+## Maternal obesity (Fig S6A)
+
+```{r}
+kegg_unexposed_tests <- kegg %>%
+  filter(Visit %in% c("Birth", "1 month")) %>%
+  group_by(Gene, Visit) %>%
+  filter(frac_nonzero(Proportion) > 0.5) %>%
+  do(tidy(wilcox.test(Proportion ~ igram_group, data=.))) %>%
+  ungroup() %>%
+  group_by(Visit) %>%
+  mutate(fdr = p.adjust(p.value, method="fdr")) %>%
+  ungroup()
+```
+
+```{r}
+kegg_unexposed_tests %>%
+  filter(fdr < 0.4) %>%
+  left_join(kegg, by=c("Gene", "Visit")) %>%
+  filter(Visit %in% c("Birth", "1 month")) %>%
+  mutate(FdrLabel = paste("P =", round(fdr, 2))) %>%
+  mutate(Proportion = if_else(Proportion > 0, Proportion, 1e-6)) %>%
+  mutate(Gene = str_replace(Gene, "transport ", "transport\n")) %>%
+  group_by(Gene, Visit, igram_group, FdrLabel) %>%
+  do(tidy(t(quantile(.$Proportion)))) %>%
+  ungroup() %>% 
+  rename(q25 = `X25.`, q50 = `X50.`, q75=`X75.`) %>%
+  select(Gene, Visit, q25, q50, q75, igram_group, FdrLabel) %>%
+  mutate(Gene = fct_reorder(Gene, q50, max)) %>%
+  ggplot(aes(x=Gene, color=igram_group)) +
+  geom_point(aes(y=q50), position=position_dodge(width=0.9)) +
+  geom_errorbar(aes(ymin=q25, ymax=q75), position=position_dodge(width=0.9)) +
+  geom_text(aes(label=FdrLabel, y=1), size=3, color="#333333", hjust=1) +
+  scale_y_log10(breaks=c(1e-6, 1e-4, 1e-2, 1)) +
+  scale_color_manual(values = bf_colors) +
+  facet_wrap(~ Visit) +
+  labs(x="", y="Proportion (log scale)", color="") +
+  coord_flip() +
+  theme_bw() +
+  theme(strip.background = element_blank())
+ggsave("igram_meconium_revision_figS6A_right.pdf", width = 6, height = 1.2, useDingbats=F)
+ggsave("igram_meconium_revision_figS6A_right.png", width = 6, height = 1.2, dpi=300)
+```
+
+## Gestational age (Fig S6B)
+
+```{r}
+kegg_gest_tests <- kegg %>%
+  filter(Visit %in% c("Birth", "1 month")) %>%
+  group_by(Gene, Visit) %>%
+  filter(frac_nonzero(Proportion) > 0.5) %>%
+  do(tidy(cor.test(
+    ~ Proportion + gest_age, data=., method="spearman"))) %>%
+  ungroup() %>%
+  group_by(Visit) %>%
+  mutate(fdr = p.adjust(p.value, method="fdr")) %>%
+  ungroup()
+```
+
+```{r}
+kegg_gest_labels <- kegg_gest_tests %>%
+  arrange(fdr, p.value) %>%
+  slice(1:6) %>%
+  mutate(GeneLabel = paste(
+    Visit, str_replace_all(Gene, " .+$", ""), sep="\n")) %>%
+  mutate(FdrLabel = paste("P =", round(fdr, 3)))
+kegg_test_labels %>%
+  left_join(kegg, by=c("Gene", "Visit")) %>%
+  arrange(fdr, p.value) %>%
+  mutate(GeneLabel = paste(
+    Visit, str_replace_all(Gene, " .+$", ""), sep="\n")) %>%
+  ggplot(aes(y=Proportion, x=gest_age)) +
+  facet_wrap(~ GeneLabel) +
+  geom_point(aes(color=gest_age)) +
+  geom_smooth(method="lm", size=0.7) +
+  geom_text(
+    aes(label=FdrLabel, y=1e-3, x=39.5), data=kegg_gest_labels,
+    size=3, color="#333333", hjust=0, vjust=1) +
+  viridis::scale_color_viridis() +
+  scale_y_log10(limits=c(1e-6, 1e-3)) +
+  labs(
+    x="Gestational age", 
+    y="Relative abundance", 
+    color="Gestational\nage") +
+  theme_bw() +
+  theme(
+    strip.background = element_blank())
+ggsave("igram_meconium_revision_figS6B_right.pdf", width = 6, height = 4.5, useDingbats=F)
+ggsave("igram_meconium_revision_figS6B_right.png", width = 6, height = 4.5, dpi=300)
+```
+
+## Intrapartum abx (Fig S6C)
+
+```{r}
+kegg_abx_tests <- kegg %>%
+  filter(
+    intrapartum_antibiotics %in% c("No", "Yes"), 
+    infant_on_antibiotics %in% "No") %>%
+  filter(Visit %in% c("Birth", "1 month")) %>%
+  group_by(Gene, Visit) %>%
+  filter(frac_nonzero(Proportion) > 0.5) %>%
+  do(tidy(wilcox.test(Proportion ~ intrapartum_antibiotics, data=.))) %>%
+  ungroup() %>%
+  group_by(Visit) %>%
+  mutate(fdr = p.adjust(p.value, method="fdr")) %>%
+  ungroup()
+```
+
+No genes affected by intrapartum abx.
+
+```{r}
+kegg_abx_tests %>%
+  filter(fdr < 0.05)
+```
+
+```{r}
+kegg_abx_tests %>%
+  filter(fdr < 0.9) %>%
+  left_join(kegg, by=c("Gene", "Visit")) %>%
+    filter(
+    intrapartum_antibiotics %in% c("No", "Yes"), 
+    infant_on_antibiotics %in% "No") %>%
+  filter(Visit %in% c("Birth", "1 month")) %>%
+  mutate(FdrLabel = paste("P =", round(fdr, 2))) %>%
+  mutate(Proportion = if_else(Proportion > 0, Proportion, 1e-6)) %>%
+  group_by(Gene, Visit, intrapartum_antibiotics, FdrLabel) %>%
+  do(tidy(t(quantile(.$Proportion)))) %>%
+  ungroup() %>% 
+  rename(q25 = `X25.`, q50 = `X50.`, q75=`X75.`) %>%
+  select(Gene, Visit, q25, q50, q75, intrapartum_antibiotics, FdrLabel) %>%
+  mutate(Gene = fct_reorder(Gene, q50, max)) %>%
+  ggplot(aes(x=Gene, color=intrapartum_antibiotics)) +
+  geom_point(aes(y=q50), position=position_dodge(width=0.9)) +
+  geom_errorbar(aes(ymin=q25, ymax=q75), position=position_dodge(width=0.9)) +
+  geom_text(aes(label=FdrLabel, y=1), size=3, color="#333333", hjust=1) +
+  scale_y_log10(breaks=c(1e-6, 1e-4, 1e-2, 1)) +
+  scale_color_manual(values = bf_colors) +
+  facet_wrap(~ Visit) +
+  labs(x="", y="Proportion (log scale)", color="") +
+  coord_flip() +
+  theme_bw() +
+  theme(strip.background = element_blank())
+ggsave("igram_meconium_revision_figS6C_right.pdf", width = 5, height = 1.2, useDingbats=F)
+ggsave("igram_meconium_revision_figS6C_right.png", width = 5, height = 1.2, dpi=300)
+```
+
+## Unexposed (Fig 7E)
+
+```{r}
+kegg_unexposed_tests <- kegg %>%
+  select(SampleID, Gene, Proportion) %>%
+  right_join(s_unexposed, by="SampleID") %>%
+  group_by(Gene, Visit) %>%
+  filter(frac_nonzero(Proportion) > 0.5) %>%
+  do(tidy(wilcox.test(Proportion ~ UnexposedLabel, data=.))) %>%
+  ungroup() %>%
+  group_by(Visit) %>%
+  mutate(fdr = p.adjust(p.value, method="fdr")) %>%
+  ungroup()
+```
+
+```{r}
+
+kegg_unexposed_tests %>%
+  filter(fdr < 0.05)
+```
+
+```{r}
+kegg_unexposed_labels <- kegg_unexposed_tests %>%
+  arrange(fdr, p.value) %>%
+  slice(1:6) %>%
+  mutate(GeneLabel = str_replace_all(Gene, " .+$", "")) %>%
+  mutate(FdrLabel = paste("P =", round(fdr, 3)))
+kegg_unexposed_labels %>%
+  left_join(kegg, by=c("Gene", "Visit")) %>%
+  select(SampleID, Gene, GeneLabel, Proportion, FdrLabel) %>%
+  inner_join(s_unexposed, by="SampleID") %>%
+  mutate(Proportion = if_else(Proportion > 0, Proportion, 1e-6)) %>%
+  group_by(GeneLabel, Visit, UnexposedLabel, FdrLabel) %>%
+  do(tidy(t(quantile(.$Proportion)))) %>%
+  ungroup() %>% 
+  rename(q25 = `X25.`, q50 = `X50.`, q75=`X75.`) %>%
+  select(GeneLabel, Visit, q25, q50, q75, UnexposedLabel, FdrLabel) %>%
+  mutate(GeneLabel = fct_reorder(GeneLabel, q50, max)) %>%
+  ggplot(aes(x=GeneLabel, color=UnexposedLabel)) +
+  geom_point(aes(y=q50), position=position_dodge(width=0.9)) +
+  geom_errorbar(
+    aes(ymin=q25, ymax=q75), 
+    position=position_dodge(width=0.9)) +
+  geom_text(
+    aes(label=FdrLabel, y=0.01), 
+    size=3, color="#333333", hjust=1) +
+  scale_y_log10(breaks=c(1e-6, 1e-4, 1e-2, 1)) +
+  scale_color_manual(values = delivery_palette) +
+  facet_grid(Visit ~ ., scales="free_y", space="free_y") +
+  labs(x="", y="Proportion (log scale)", color="") +
+  coord_flip() +
+  theme_bw() +
+  theme(
+    strip.background = element_blank(),
+    strip.text.y = element_text(angle=0))
+ggsave("igram_meconium_revision_figS7E.pdf", width = 5, height = 2, useDingbats=F)
+ggsave("igram_meconium_revision_figS7E.png", width = 5, height = 2, dpi=300)
+```
+
+## Old work
+
+```{r}
+birth_kegg_richness %>%
+  mutate(NegLogP = -log10(p.value)) %>%
+  mutate(FdrSig = fdr < 0.05) %>%
+  ggplot() +
+  geom_point(aes(x=estimate, y=NegLogP, color=FdrSig))
+```
+
+```{r}
+kegg_saturation <- 10
+kegg_abundance_palette <- c("#FFFFFF", brewer.pal(9, "PuBuGn")[c(3:9, rep(9, kegg_saturation + 1))])
+
+kegg_abundance_breaks <- c(0, 1e-5, seq(kegg_saturation) / kegg_saturation)
+
+birth_kegg_data %>%
+  left_join(select(s0_clinical, SampleID, hrs_to_collection), by="SampleID") %>%
+  mutate(SampleID = fct_reorder(SampleID, hrs_to_collection)) %>%
+  mutate(Gene = fct_reorder(Gene, Proportion)) %>%
+  mutate(Proportion = ifelse(Proportion > 0, Proportion, 1e-8)) %>%
+  ggplot(aes(x=SampleID, y=Gene, fill=Proportion)) +
+  geom_tile(color="grey40", size=0.4) + 
+  scale_fill_gradientn(
+    colors=kegg_abundance_palette,
+    values=kegg_abundance_breaks, trans="identity") +
+  labs(x="", y="") +
+  coord_equal() +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    strip.text.y = element_blank(),
+    strip.background = element_blank(),
+    axis.text.x = element_text(angle=90, hjust=1, vjust=0.4))
+```
+
+```{r}
+highvar_terms <- kegg %>%
+  group_by(Term) %>%
+  summarize(TermVar = var(Proportion)) %>%
+  ungroup() %>%
+  top_n(52, TermVar) %>%
+  arrange(desc(TermVar)) %$% 
+  Term
+highvar_terms[1:2]
+highvar_terms <- highvar_terms[3:52]
+
+```
+
+```{r}
+kegg_toplot <- kegg %>%
+  filter(Term %in% highvar_terms) %>%
+  reshape2::acast(Term ~ SampleID, value.var = "Proportion", fill = 0) %>%
+  pheatmap::pheatmap(
+    filename = "igram_kegg.pdf",
+    cellwidth=12, cellheight=12)
+```
+

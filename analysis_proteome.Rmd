@@ -1,0 +1,1692 @@
+---
+title: "IGRAM Proteomics"
+author: "Kyle Bittinger"
+date: "July 3, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE}
+library(tidyverse)
+library(readxl)
+library(ggsci)
+library(eclectic)
+library(broom)
+library(ggbeeswarm)
+```
+
+```{r}
+host_palette <- c("#084081", "#41AB5D")
+phylum_palette_df <- data_frame(
+  Phylum = c(
+    "Actinobacteria", "Bacteroidetes", "Firmicutes", "Proteobacteria",
+    "Fusobacteria", "unannotated"),
+  Color = c(ggsci::pal_aaas()(5), "#999999"))
+phylum_palette <- deframe(phylum_palette_df)
+```
+
+```{r}
+replace_lod <- function (x, multiplier = 0.1) {
+  xmin <- min(x, na.rm = TRUE)
+  xreplace <- xmin * multiplier
+  if_else(is.na(x), xreplace, x)
+}
+```
+
+
+# Load data
+
+## Subject data
+
+```{r}
+s0_clinical <- readRDS("s0_clinical.RDS") %>%
+  arrange(Group16, hrs_to_collection) %>%
+  mutate(GroupLabel = `levels<-`(Group16, sub(", ", "\n", levels(Group16)))) %>%
+    mutate_at(
+    vars(copy_num_per_gram_feces, copy_num_per_gram_feces_human), 
+    funs(replace_lod)) %>%
+  filter(
+    !is.na(copy_num_per_gram_feces),
+    !is.na(copy_num_per_gram_feces_human)) %>%
+  mutate(dna_ratio = (
+    (copy_num_per_gram_feces * 5) / (copy_num_per_gram_feces_human * 3234)
+  ))
+```
+
+## Alpha diversity
+
+```{r}
+mp_richness <- read_csv("igram_meconium_richness.csv")
+```
+
+
+## Total protein, sample IDs
+
+```{r}
+protb_samples <- read_xlsx("MeconiumSampleLog_forAnumita-elliot.xlsx") %>%
+  rename(ProtSubjectID = `sample #`) %>%
+  select(-`other details`) %>%
+  mutate(ProtSubjectID = as.character(ProtSubjectID)) %>%
+  mutate(SubjectID = paste0("s", PID)) %>%
+  left_join(s0_clinical, by="SubjectID")
+```
+
+## Bacterial protein, untargeted reference DB
+
+```{r}
+prota_bact_wide <- read_xlsx(
+  "IGRAM_meconium_proteinGroups-processed.xlsx", sheet=2) %>%
+  filter(!is.na(`Unique peptides`)) %>%
+  rename(
+    phylum = phyllum,
+    KeggAnnotation = `bacterial protein annotations (KEGG Annotation)`,
+    EggNogAnnotation = `bacterial protein annotations (eggNOG Annotation)`) %>%
+  select(-`...35`)
+prota_bact <- prota_bact_wide %>%
+  gather(ProtSubjectID, iBAQ, starts_with("iBAQ ")) %>%
+  mutate(kingdom="Bacteria")
+```
+
+```{r}
+prota_human_wide <- read_xlsx(
+  "IGRAM_meconium_proteinGroups-processed.xlsx", sheet=3) %>%
+  filter(!is.na(`Protein IDs`)) %>%
+  rename(`Unique peptides` = `Peptide counts (unique)`)
+prota_human <- prota_human_wide %>%
+  gather(ProtSubjectID, iBAQ, starts_with("iBAQ ")) %>%
+  mutate(phylum="Human", genus="Human", kingdom="Human")
+```
+
+```{r}
+prota <- bind_rows(prota_bact, prota_human) %>%
+  rename(ProteinID = `Protein IDs`) %>%
+  filter(ProtSubjectID %in% prota_bact$ProtSubjectID) %>%
+  filter(ProtSubjectID %in% prota_human$ProtSubjectID) %>%
+  mutate(ProtSubjectID = str_remove(ProtSubjectID, "^iBAQ ")) %>%
+  group_by(ProtSubjectID) %>%
+  mutate(Abundance = iBAQ / sum(iBAQ)) %>% 
+  ungroup() %>%
+  left_join(protb_samples, by="ProtSubjectID") %>%
+  mutate(phylum = fct_recode(phylum, unannotated="unknown"))
+```
+
+```{r}
+prota %>%
+  count(SampleID, sort=TRUE)
+```
+
+
+## Bacterial protein, custom DB
+
+From July 2018.
+
+The table of raw data contains only bacterial peptides.
+
+```{r}
+protb_wide <- read_xlsx(
+  "IGRAM custom data base search results_for Kyle (1).xlsx",
+  sheet = 3) %>%
+  rename(
+    Coverage = `Coverage [%]`,
+    NumPeptides = `# Peptides`,
+    NumPSM = `# PSMs`) %>%
+  select(-`# Peptides (by Search Engine): Sequest HT`, -`# Razor Peptides`)
+protb <- protb_wide %>%
+  gather(ProtSubjectID, Abundance, starts_with("IGRAM ")) %>%
+  mutate(ProtSubjectID = str_remove(ProtSubjectID, "IGRAM ")) %>%
+  filter(!(ProtSubjectID %in% "46__1")) %>%
+  mutate(Abundance = replace_na(Abundance, 0)) %>%
+  mutate(OriginSubjectID = substr(Description, 0, 4)) %>%
+  left_join(protb_samples, by="ProtSubjectID")
+```
+
+```{r}
+protb %>% count(SampleID, sort=T)
+```
+
+
+## Human-only protein
+
+```{r}
+prot <- read_xlsx("IGRAM_Proteomics_07.02.2018_ESF.xlsx", skip=1) %>%
+  # Remove notes, percent detected, averages, std errors
+  select(-c(2, 3, 8:10, 12:14, 15:21)) %>%
+  rename(
+    SourceID = `ID source`,
+    DiffAbund = `Differentially Abundant (Before_vs_AfterHigh)`,
+    UniprotID = `UniProt ID`,
+    FullProteinName = `Protein name`,
+    GeneName = `Gene Name`,
+    UniquePeptides = `Peptide counts (unique)`) %>%
+  mutate(ProteinName = sub("OS=.+$", "", FullProteinName, perl=TRUE)) %>%
+  select(UniprotID, ProteinName, everything()) %>%
+  head(-1)
+prot_info <- prot %>%
+  select(1:7)
+prot <- prot %>%
+  gather(SubjectID, PctAbund, starts_with("PID ")) %>%
+  mutate(Abundance = PctAbund / 100) %>%
+  mutate(SubjectID = sub("PID ", "s", SubjectID))
+```
+
+```{r}
+setdiff(prot$SubjectID, s0_clinical$SubjectID)
+setdiff(s0_clinical$SubjectID, prot$SubjectID)
+```
+## Revision data
+
+```{r message=FALSE}
+bacteria_accessions <- data_frame(
+  Species = c(
+    "Escherichia coli", 
+    "Bacteroides vulgatus", 
+    "Enterococcus faecalis"),
+  LengthFp = c(
+    "revision_data/faa/escherichia_coli_lengths.txt",
+    "revision_data/faa/bacteroides_vulgatus_lengths.tsv",
+    "revision_data/faa/enterococcus_faecalis_lengths.txt")) %>%
+  group_by(Species) %>%
+  do(read_tsv(
+    .$LengthFp, col_names = c("Accession", "SeqLength"))) %>%
+  ungroup()
+```
+
+```{r}
+strain_taxa <- read_csv("strain_taxa.csv")
+strains <- read_tsv("strain_counts.txt") %>%
+  mutate_at(-c(1,2), funs(ifelse(is.na(.), 0, .))) %>%
+  mutate(
+    `Klebsiella pneumoniae` = `Klebsiella pneumoniae` + 
+      `Klebsiella pneumoniae_1`) %>%
+  select(-`Klebsiella pneumoniae_1`) %>%
+  gather(Species, StrainNum, -SampleID, -Status) %>%
+  left_join(strain_taxa, by="Species") %>%
+  mutate(Species = ifelse(
+    is.na(CorrectedSpecies), Species, CorrectedSpecies)) %>%
+  mutate(Species = ifelse(
+    grepl(" ", Species), Species, paste(Species, "sp."))) %>%
+  mutate(Taxon = factor(Taxon)) %>%
+  left_join(s0_clinical, by="SampleID")
+strains_pres <- strains %>%
+  filter(StrainNum > 0)
+strain_richness <- strains %>%
+  group_by(SubjectID) %>%
+  summarize(StrainRichness = sum(StrainNum)) %>%
+  ungroup()
+strain_richness_targeted <- strains %>%
+  filter(
+    str_detect(Taxon, "Enterbacteriaceae") |
+      str_detect(Taxon, "Bacteroidetes") |
+      str_detect(Taxon, "Bacilli")) %>%
+  group_by(SubjectID) %>%
+  summarize(StrainRichness = sum(StrainNum)) %>%
+  ungroup() %>%
+  mutate(HasStrains = ifelse(StrainRichness > 0, "Present", "Absent"))
+```
+
+
+```{r}
+subject_assemblies <- read_csv("species_assembled.txt")
+ecoli_subjs <- subject_assemblies %>%
+  filter(SpeciesAssembled %in% "Escherichia coli") %>%
+  with(SubjectID)
+bvulg_subjs <- subject_assemblies %>%
+  filter(SpeciesAssembled %in% "Bacteroides vulgatus") %>%
+  with(SubjectID)
+efaec_subjs <- subject_assemblies %>%
+  filter(SpeciesAssembled %in% "Enterococcus faecalis") %>%
+  with(SubjectID)
+subject_assembly_ids <- subject_assemblies %>%
+  left_join(protb_samples) %>%
+  filter(!is.na(ProtSubjectID)) %>%
+  select(IgramSubjectID = SubjectID, ProtSubjectID, SpeciesAssembled)
+```
+
+## Bacterial protein, targeted DB
+
+```{r}
+prot3_info <- read_tsv("revision_data/proteomics_allsamples/IGRAAM.pjl.revision.decoyFDR.search.normalization2_Proteins.txt") %>%
+  select(1:90) %>%
+  left_join(bacteria_accessions, by="Accession") %>%
+  mutate(Species = replace_na(Species, "Human"))
+prot3 <- prot3_info %>%
+  gather(ProtSubjectID, Abundance, starts_with("Abundances Normalized ")) %>%
+  mutate(
+    ProtSubjectID = str_remove(ProtSubjectID, "^Abundances Normalized F")) %>%
+  mutate(ProtSubjectID = str_remove(ProtSubjectID, " Sample$")) %>%
+  mutate(Abundance = replace_na(Abundance, 0)) %>%
+  # Initially normalized to a total of 8268626658
+  # Re-normalize to 1
+  group_by(ProtSubjectID) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup() %>%
+  left_join(protb_samples, by="ProtSubjectID") %>%
+  left_join(mp_richness, by="SampleID") %>%
+  mutate(
+    EcoliAssembled = SubjectID %in% ecoli_subjs,
+    BvulgAssembled = SubjectID %in% bvulg_subjs,
+    EfaecAssembled = SubjectID %in% efaec_subjs)
+prot3_info <- prot3_info %>%
+  select(-(22:90))
+```
+
+## Bacterial protein, targeted in E. coli samples
+
+prot4 is E. coli samples only
+
+```{r}
+prot4_info <- read_tsv("revision_data/proteomics_ecolisamples/IGRAAM.pjl.revision.decoyFDR.search.normalization2.EcoliOnlySamples_Proteins.txt") %>%
+  select(1:34) %>%
+  left_join(bacteria_accessions, by="Accession") %>%
+  mutate(Species = replace_na(Species, "Human"))
+prot4 <- prot4_info %>%
+  gather(
+    ProtSubjectID, NormAbund, 
+    starts_with("Abundances")) %>%
+  mutate(ProtSubjectID = str_remove(
+      ProtSubjectID, "^Abundances \\(Normalized\\): F")) %>%
+  mutate(ProtSubjectID = str_remove(ProtSubjectID, ": Sample$")) %>%
+  left_join(protb_samples, by="ProtSubjectID") %>%
+  mutate(
+    EcoliAssembled = SubjectID %in% ecoli_subjs,
+    BvulgAssembled = SubjectID %in% bvulg_subjs,
+    EfaecAssembled = SubjectID %in% efaec_subjs)
+prot4_info <- prot4_info %>%
+  select(-(22:34))
+```
+
+# Initial checks
+
+```{r}
+prot %>%
+  group_by(UniprotID) %>%
+  summarize(PropNonzero = mean(PctAbund > 0)) %>%
+  ggplot() +
+  geom_histogram(aes(x=PropNonzero), binwidth=0.02, center=0.01) +
+  geom_vline(xintercept = 0.1, linetype = "dashed") +
+  scale_x_continuous(breaks = seq(0, 1, 0.2))
+```
+
+
+```{r}
+prot_to_test <- prot %>%
+  group_by(UniprotID) %>%
+  filter(mean(PctAbund > 0) > 0.1) %>%
+  ungroup()
+```
+
+```{r}
+mucins <-
+  prot %>%
+  filter(str_detect(ProteinName, regex("mucin", ignore_case = TRUE))) %>%
+  group_by(ProteinName, GeneName) %>%
+  summarize(MeanAbund = mean(PctAbund), FracAbund = mean(PctAbund > 0)) %>%
+  arrange(desc(FracAbund))
+```
+
+
+```{r}
+
+
+  
+```
+
+
+# Total amount
+
+
+
+```{r}
+prot_conc <- protb_samples %>%
+  filter(!is.na(Group16)) %>%
+  mutate(Group16Label = `levels<-`(Group16, str_replace(levels(Group16), ", ", ",\n"))) %>%
+  rename(TotalConc = `Protein Conc (ug/ul)`)
+
+prot_conc %>%
+  ggplot(aes(x=Group16Label, y=TotalConc)) +
+  geom_boxplot(aes(fill=Group16Label), coef=1e9) +
+  scale_fill_jco(guide=F) +
+  scale_y_continuous(limits=c(0, 11)) +
+  ggpubr::stat_compare_means(
+    comparisons = combn(3, 2, simplify = FALSE)) +
+  ggpubr::stat_compare_means(label.y = 11) +
+  labs(
+    x="", 
+    y = expression(paste(
+      "Total protein concentration (", mu, "g/", mu, "L)")), 
+    parse=T) +
+  theme_bw()
+ggsave("igram_protein_total_conc.pdf", width=4.6, height=4, useDingbats=F)
+ggsave(
+  "igram_meconium_revision_figS20.pdf", 
+  width=4.6, height=4, useDingbats=F)
+ggsave(
+  "igram_meconium_revision_figS20.png", 
+  width=4.6, height=4, dpi=300)
+```
+
+```{r}
+prot_conc %>%
+  aov(TotalConc ~ Group16, data=.) %>%
+  summary()
+prot_conc %>%
+  kruskal.test(TotalConc ~ Group16, data=.)
+```
+
+```{r}
+prot_conc %>%
+  ggplot(aes(x=hrs_to_collection, y=TotalConc, color=HostGroup)) +
+  geom_point() +
+  geom_smooth()
+```
+
+# PCA
+
+```{r}
+df_to_matrix <- function (df, as_rowname, as_colname, as_value) {
+  df %>%
+    select_(as_rowname, as_colname, as_value) %>%
+    spread(as_colname, as_value) %>%
+    as.data.frame() %>%
+    column_to_rownames(as_rowname) %>%
+    as.matrix()
+}
+prot_for_pca <- prot_to_test %>%
+  filter(!is.na(UniprotID)) %>%
+  inner_join(s0_clinical, by="SubjectID") %>%
+  filter(!is.na(Group16)) %>%
+  mutate(LogAbundance = log10(Abundance + 1e-8)) %>%
+  df_to_matrix("SubjectID", "UniprotID", "LogAbundance")
+prot_pca <- prcomp(prot_for_pca, center = TRUE, scale. = TRUE)
+prot_pca_df <- prot_pca$x[,1:5] %>% 
+  as.data.frame() %>%
+  rownames_to_column("SubjectID")
+```
+
+```{r}
+prot_pca_df %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  count(Group16)
+```
+
+
+```{r}
+prot_pca_var_df <- data_frame(
+  Component = fct_inorder(paste0("PC", seq_along(prot_pca$sdev))),
+  StDev = prot_pca$sdev) %>%
+  mutate(Variance = StDev ^ 2) %>%
+  mutate(PropVariance = Variance / sum(Variance)) %>%
+  mutate(PctVar = round(100 * PropVariance))
+prot_pca_var_df %>%
+  slice(1:10) %>%
+  ggplot() +
+  geom_col(aes(x=Component, y=PropVariance)) +
+  scale_y_continuous(labels=scales::percent) +
+  labs(y="Percent of total variance", x="") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90, vjust=0.4, hjust=1))
+ggsave("igram_proteomics_scree.pdf", width=2.5, height=3)
+```
+
+```{r}
+group16_palette <- c("#FFA50A", "#41AB5D", "#084081")
+
+p <- prot_pca_df %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  ggplot() +
+  geom_point(aes(x=PC1, y=PC2, color=Group16)) +
+  scale_color_manual(values=group16_palette) +
+  labs(
+    x = paste0("Principal component 1 (", prot_pca_var_df$PctVar[1], "%)"),
+    y = paste0("Principal component 2 (", prot_pca_var_df$PctVar[2], "%)"),
+    color="") +
+  coord_equal() +
+  theme_bw() 
+p +
+  theme(
+    legend.position = "bottom", 
+    legend.direction = "vertical")
+ggsave("igram_proteomics_pca.pdf", width=4, height=4)
+```
+
+```{r}
+p + 
+  theme(
+    legend.position = c(0.35, 0.25), 
+    legend.direction = "vertical",
+    legend.background = element_rect(
+      color = "black", size = 0.3),
+    legend.title = element_blank())
+ggsave(
+  "igram_meconium_poster_proteinpca.png",
+  width = 4, height = 3, dpi=600)
+```
+
+```{r}
+prot_pca_df %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  mutate(Group16 = fct_rev(Group16)) %>%
+  ggplot(aes(x=Group16, y=PC1, fill=Group16)) +
+  geom_boxplot(coef=Inf) +
+  scale_fill_manual(values=rev(group16_palette), guide=FALSE) +
+  scale_x_discrete() +
+  coord_flip() +
+  theme_void()
+ggsave("igram_proteomics_pca_pc1vals.pdf", width=3.5, height=1)
+```
+
+```{r}
+prot_pca_df %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  lm(PC1 ~ Group16, data=.) %>%
+  summary()
+```
+
+```{r}
+prot_pca_df %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  mutate(AfterLow = Group16 %in% "After 16h, human DNA < 75%") %>%
+  wilcox.test(PC1 ~ AfterLow, data=.)
+```
+
+
+```{r}
+prot_manova12 <- prot_pca_df %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  manova(cbind(PC1, PC2) ~ HostGroup, data=.)
+summary(prot_manova12)
+```
+
+
+# Test by correlation
+
+```{r}
+options(dplyr.show_progress = FALSE)
+
+prot_cor_tests <- prot_to_test %>%
+  inner_join(s0_clinical, by="SubjectID") %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  group_by(UniprotID) %>%
+  do(tidy(cor.test(~ PctAbund + NonHostProp, data=., method="kendall"))) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+prot_cor_tests_info <- prot_cor_tests %>%
+  left_join(prot_info, by="UniprotID") %>%
+  filter(fdr < 0.05)
+```
+
+```{r}
+prot_cor_tests %>%
+  filter(fdr < 0.01) %>%
+  mutate(CorrelationLabel = ifelse(estimate < 0, "-", "+")) %>%
+  left_join(prot, by="UniprotID") %>%
+  mutate(ProteinName = paste0(ProteinName, " UniProt=", UniprotID)) %>%
+  mutate(ProteinName = fct_reorder(ProteinName, desc(p.value))) %>%
+  group_by(ProteinName) %>%
+  mutate(NormAbundance = scale(Abundance)) %>%
+  ungroup() %>%
+  inner_join(s0_clinical, by="SubjectID") %>%
+  filter(!is.na(Group16)) %>%
+  ggplot(aes(SubjectID, ProteinName, fill=NormAbundance)) +
+  geom_tile(color="grey40", size=0.4) + 
+  facet_grid(CorrelationLabel ~ GroupLabel, space="free",scales="free") +
+  scale_fill_gradient2(low="blue", high="red") +
+  labs(x="", y="", fill="Normalized\nabundance") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5))
+ggsave("igram_proteomics_diffabund_correlation.pdf", width = 16, height = 8)
+```
+
+# Test by groups
+
+```{r warning=FALSE, message=FALSE}
+prot_grp_tests <- prot_to_test %>%
+  inner_join(s0_clinical, by="SubjectID") %>%
+  filter(!is.na(Group16)) %>%
+  filter(!(Group16 %in% "After 16h, human DNA > 75%")) %>%
+  group_by(UniprotID) %>%
+  do(tidy(wilcox.test(PctAbund ~ Group16, data=.), )) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+prot_grp_tests_sig <- prot_grp_tests %>%
+  filter(fdr < 0.05)
+prot_grp_tests_sig %>%
+  left_join(prot_info, by="UniprotID")
+```
+
+```{r warning=FALSE, message=FALSE}
+prot_grp_tests_highhuman <- prot_to_test %>%
+  inner_join(s0_clinical, by="SubjectID") %>%
+  filter(!is.na(Group16)) %>%
+  filter(!(Group16 %in% "After 16h, human DNA < 75%")) %>%
+  group_by(UniprotID) %>%
+  do(tidy(wilcox.test(PctAbund ~ Group16, data=.))) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+prot_grp_tests_highhuman_info <- prot_grp_tests_highhuman %>%
+  left_join(prot_info, by="UniprotID") %>%
+  filter(fdr < 0.05)
+```
+
+No human proteins are different between Before 16h and After 16h, human DNA > 75%.
+
+```{r}
+prot_group_plot <- prot_grp_tests %>%
+  filter(fdr < 0.05) %>%
+  left_join(prot, by="UniprotID") %>%
+  mutate(ProteinName = paste0(ProteinName, " UniProt=", UniprotID)) %>%
+  mutate(ProteinName = fct_reorder(ProteinName, desc(p.value))) %>%
+  group_by(ProteinName) %>%
+  mutate(NormAbundance = scale(Abundance)) %>%
+  ungroup() %>%
+  inner_join(s0_clinical, by="SubjectID") %>%
+  filter(!is.na(Group16)) %>%
+  ggplot(aes(SubjectID, ProteinName, fill=NormAbundance)) +
+  geom_tile() + #color="grey40", size=0.2) + 
+  facet_grid(~ GroupLabel, space="free",scales="free") +
+  scale_fill_gradient2(low="blue", high="red") +
+  labs(x="", y="", fill="Normalized\nabundance") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5))
+prot_group_plot
+ggsave("igram_proteomics_diffabund_groups.pdf", width = 18, height = 8)
+ggsave("igram_meconium_revision_figS19A.pdf", width = 18, height = 8)
+ggsave("igram_meconium_revision_figS19A.png", width = 18, height = 8, dpi=300)
+```
+
+```{r}
+go_genes <- read_tsv(
+  "revision_data/goa_human.gaf", skip=31, 
+  col_names = paste0("X", 1:17)) %>%
+  select(GeneName = X3, GoID = X5) %>%
+  distinct()
+go_names <- read_tsv(
+  "revision_data/go_names.tsv", col_names = c("GoID", "GoName")) %>%
+  distinct()
+```
+
+## go categories
+
+```{r}
+prot_go_unchanged <- prot_info %>%
+  filter(!(UniprotID %in% prot_grp_tests_sig$UniprotID)) %>%
+  left_join(go_genes, by="GeneName") %>%
+  left_join(go_names, by="GoID") %>%
+  mutate(TotalNum = length(unique(UniprotID))) %>%
+  group_by(GoName, TotalNum) %>%
+  summarize(NumProt = n(), FracProt = n() / TotalNum[1]) %>%
+  ungroup() %>%
+  arrange(desc(FracProt)) %>%
+  mutate(Class="Difference not statistically significant")
+```
+
+
+```{r}
+prot_go_sig <- prot_grp_tests_sig %>%
+  select(UniprotID, p.value, fdr) %>%
+  left_join(prot_info, by="UniprotID") %>%
+  left_join(go_genes, by="GeneName") %>%
+  left_join(go_names, by="GoID") %>%
+  mutate(TotalNum = length(unique(UniprotID))) %>%
+  group_by(GoName, TotalNum) %>%
+  summarize(NumProt = n(), FracProt = n() / TotalNum[1]) %>%
+  ungroup() %>%
+  arrange(desc(FracProt)) %>%
+  mutate(Class="Decreased after 16h, human DNA < 75%")
+```
+
+```{r}
+prot_go <- bind_rows(prot_go_unchanged, prot_go_sig) %>%
+  mutate(GoName = replace_na(GoName, "Unannotated")) %>%
+  mutate(GoName = fct_lump(GoName, n=7, w = FracProt)) %>%
+  mutate(GoName = fct_reorder(GoName, FracProt)) %>%
+  filter(!(GoName %in% "Other"))
+prot_go %>%
+  ggplot() +
+  geom_col(aes(x=GoName, y=FracProt, fill=Class), position="dodge") +
+  coord_flip() +
+  scale_fill_jama(guide = guide_legend(reverse = TRUE)) +
+  labs(
+    x="GO category", fill="",
+    y="Proportion of proteins identified") +
+  theme_bw() +
+  theme(legend.spacing.y = grid::unit(1.0, 'cm'))
+ggsave("igram_meconium_revision_figS19B.pdf", width=8, height=3, useDingbats=F)
+ggsave("igram_meconium_revision_figS19B.png", width=8, height=3, dpi=300)
+```
+
+```{r}
+prot_go %>% 
+  group_by(GoName) %>%
+  mutate(NumNot = TotalNum - NumProt) %>%
+  do(tidy(fisher.test(matrix(c(.$NumProt, .$NumNot), nrow=2, byrow = T)))) %>%
+  ungroup() %>%
+  mutate(fdr = p.adjust(p.value, method="fdr"))
+```
+
+```{r}
+prot_go %>% 
+  mutate(NumNot = TotalNum - NumProt) %>%
+  select(GoName, NumProt, NumNot, TotalNum)
+```
+
+
+```{r}
+prot_group_medians <- prot_to_test %>%
+  inner_join(s0_clinical, by="SubjectID") %>%
+  filter(!is.na(Group16)) %>%
+  group_by(UniprotID, ProteinName, GeneName, Group16) %>%
+  summarise(MedAbund = median(PctAbund)) %>%
+  ungroup()
+```
+
+
+
+```{r}
+prot_group_plot +
+  theme(axis.text = element_blank(), axis.ticks = element_blank(),
+        strip.background = element_blank())
+ggsave("igram_meconium_fig4B.pdf", width = 7.2, height = 3.5)
+
+```
+
+
+# Group means
+
+```{r}
+prot_to_test %>%
+  mutate(LogAbundance = log10(Abundance + 1e-8)) %>%
+  inner_join(s0_clinical, by="SubjectID") %>%
+  filter(!is.na(Group16)) %>%
+  group_by(UniprotID, GroupLabel) %>%
+  summarize(LogMean = mean(LogAbundance), LogMed = median(LogAbundance)) %>%
+  ggplot() +
+  geom_violin(aes(x=GroupLabel, y=LogMean), draw_quantiles = c(0.25, 0.5, 0.75)) +
+  labs(x="", y="Distribution of mean abundances\nfor human proteins (log scale)") +
+  theme_bw()
+ggsave("igram_proteomics_group_means.pdf", width=4.5, height=3)
+```
+
+
+# Defensins
+
+```{r}
+defensins <- prot %>%
+  filter(grepl("defensin", ProteinName, ignore.case = TRUE)) %>%
+  inner_join(s0_clinical, by="SubjectID") 
+```
+
+```{r}
+defensins %>%
+  ggplot() +
+  geom_point(aes(x=NonHostProp, y=Abundance, color=Group16)) +
+  facet_wrap(~ ProteinName, ncol = 1, scales="free_y") +
+  labs(color="", x="Non-host DNA") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_x_continuous(labels = scales::percent) +
+  scale_color_npg(na.value = "#999999") +
+  theme_bw()
+ggsave("igram_proteomics_defensin_scatter.pdf", width=6, height=5)
+ggsave("igram_proteomics_defensin_scatter.png", width=6, height=5)
+```
+
+```{r}
+defensins %>%
+  group_by(ProteinName) %>%
+  do(tidy(cor.test(~ Abundance + NonHostProp, data=., method="kendall")))
+```
+
+
+```{r}
+defensins %>%
+  filter(!is.na(Group16)) %>%
+  ggplot() +
+  geom_boxplot(aes(y=Abundance, x=Group16, fill=Group16)) +
+  facet_wrap(~ ProteinName, ncol = 1, scales="free_y") +
+  labs(fill="", x="") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_npg() +
+  theme_bw() +
+  theme(axis.text.x = element_blank())
+ggsave("igram_proteomics_defensin_boxplot.pdf", width=5.6, height=5)
+ggsave("igram_proteomics_defensin_boxplot.png", width=5.6, height=5)
+```
+
+```{r}
+defensins %>%
+  filter(!is.na(Group16)) %>%
+  filter(!(Group16 %in% "Before 16h")) %>%
+  group_by(ProteinName) %>%
+  do(tidy(wilcox.test(Abundance ~ Group16, data=.)))
+```
+
+
+```{r}
+defensins %>%
+  filter(!is.na(Group16)) %>%
+  group_by(ProteinName, Group16) %>%
+  summarize(NumPresent = sum(Abundance > 0), FracPresent = mean(Abundance > 0)) %>%
+  ggplot() +
+  geom_col(aes(x=Group16, y=FracPresent, fill=Group16), position = "dodge") +
+  geom_hline(yintercept=0.9, linetype="dashed") +
+  facet_wrap(~ ProteinName, ncol=1) +
+  ggsci::scale_fill_npg() +
+  scale_y_continuous(labels=scales::percent) +
+  labs(x="", fill="", y="Fraction of samples present") +
+  theme_bw() +
+  theme(axis.text.x = element_blank())
+ggsave("igram_proteomics_defensin_bars.pdf", width=5.6, height=5)
+ggsave("igram_proteomics_defensin_bars.png", width=5.6, height=5)
+
+```
+
+```{r}
+defensins %>%
+  filter(!is.na(Group16)) %>%
+  filter(!(Group16 %in% "Before 16 hours")) %>%
+  mutate(Present = Abundance > 0) %>%
+  count(ProteinName, Group16, Present) %>%
+  group_by(ProteinName) %>%
+  do(tidy(fisher.test(matrix(.$n, nrow = 2))))
+```
+
+# Bact untargeted (prota)
+
+## Total bacterial protein
+
+```{r}
+prota %>%
+  group_by(SampleID) %>%
+  summarize(TotalAbund = sum(Abundance, na.rm = T))
+```
+
+
+```{r}
+prota_totalbact <- prota %>%
+  group_by(SubjectID) %>%
+  filter(!(genus %in% "Human")) %>%
+  summarize(TotalBactProtAbund = sum(Abundance, na.rm=T)) %>%
+  ungroup() %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  left_join(mp_richness, by="SampleID")
+```
+
+### Distribution
+
+```{r}
+prota_summary <- prota_totalbact %>%
+  summarize_at(vars(TotalBactProtAbund), funs(mean, median, sd), na.rm=T)
+```
+
+```{r}
+prota_totalbact %>%
+  ggplot() +
+  geom_histogram(aes(x=TotalBactProtAbund), binwidth = 0.01, boundary=0) +
+  geom_vline(xintercept=prota_summary$median, linetype="dashed") +
+  annotate(
+    "text", x=prota_summary$median + 0.01, y=9, 
+    label=paste("Median", round(prota_summary$median, 4)), 
+    hjust=0, vjust=0) +
+  labs(y="Number of samples", x="Proportion of bacterial proteins") +
+  theme_bw()
+```
+
+```{r}
+prota_phylum <- prota %>%
+  filter(!(genus %in% "Human")) %>%
+  group_by(SubjectID, phylum) %>%
+  summarize(PhylumProtAbund = sum(Abundance, na.rm=T)) %>%
+  ungroup() %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  left_join(mp_richness, by="SampleID")
+prota_phylum %>%
+  mutate(Group16 = fct_rev(str_replace(Group16, ", ", "\n"))) %>%
+  mutate(SubjectID = fct_reorder(SubjectID, hrs_to_collection)) %>%
+  ggplot() +
+  geom_col(aes(x=SubjectID, y=PhylumProtAbund, fill=phylum)) +
+  facet_grid(~ Group16, scales="free_x", space="free_x") +
+  scale_fill_manual(values=phylum_palette) +
+  labs(x="", fill="Phylum", y="Bacterial protein relative abundance\nfrom untargeted database search") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))
+ggsave("igram_proteomics_untargeted_phylum_bars.pdf", width=9, height=4)
+ggsave("igram_meconium_revision_figS18A.pdf", width=9, height=4)
+ggsave("igram_meconium_revision_figS18A.png", width=9, height=4, dpi=300)
+```
+
+
+### Time since birth
+
+```{r}
+prota_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  ggplot() +
+  geom_point(aes(x=hrs_to_collection, y=TotalBactProtAbund, color=HostGroup)) +
+  scale_color_manual(values=host_palette) +
+  scale_y_log10() +
+  labs(
+    x="Hours to collection", 
+    y="Relative abundance of bacterial proteins", color="") +
+  theme_bw()
+
+```
+
+```{r}
+prota_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  cor.test(~ hrs_to_collection + TotalBactProtAbund, data=., method="spearman")
+```
+
+### Host DNA
+
+```{r}
+prota_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  wilcox.test(TotalBactProtAbund ~ HostGroup, data=.)
+prota_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  cor.test(~ TotalBactProtAbund + HostProp, data=., method="spearman")
+prota_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  kruskal.test(TotalBactProtAbund ~ Group16, data=.)
+```
+
+### qPCR
+
+```{r}
+prota_totalbact %>%
+  ggplot() +
+  geom_point(aes(x=copy_num_per_gram_feces, y=TotalBactProtAbund, color=HostGroup)) +
+  scale_color_manual(values=host_palette) +
+  scale_y_log10() +
+  scale_x_log10() +
+  labs(
+    x="16S qPCR", 
+    y="Relative abundance of bacterial proteins", color="") +
+  theme_bw()
+```
+
+```{r}
+prota_totalbact %>%
+  cor.test(~ copy_num_per_gram_feces + TotalBactProtAbund, data=., method="spearman")
+```
+
+### Richness
+
+```{r}
+prota_totalbact %>%
+  ggplot() +
+  geom_point(aes(x=Richness, y=TotalBactProtAbund, color=HostGroup)) +
+  scale_color_manual(values=host_palette) +
+  scale_y_log10() +
+  labs(
+    x="Hours to collection", 
+    y="Relative abundance of bacterial proteins", color="") +
+  theme_bw()
+```
+
+```{r}
+prota_totalbact %>%
+  cor.test(~ Richness + TotalBactProtAbund, data=., method="spearman")
+```
+
+
+# Bact custom (protb)
+
+## Total bacterial protein
+
+```{r}
+protb %>%
+  group_by(SampleID) %>%
+  summarize(TotalAbund = sum(Abundance, na.rm = T))
+```
+
+
+```{r}
+protb_totalbact <- protb %>%
+  group_by(SubjectID) %>%
+  summarize(TotalBactProtAbund = sum(Abundance, na.rm=T)) %>%
+  ungroup() %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  left_join(mp_richness, by="SampleID")
+```
+
+### Sample of origin
+
+```{r}
+protb %>%
+  filter(SubjectID %in% OriginSubjectID) %>%
+  group_by(OriginSubjectID, SubjectID, Group16) %>%
+  summarize(n = sum(Abundance > 0)) %>%
+  ungroup() %>%
+  filter(n > 0) %>%
+  mutate(Group16 = fct_rev(str_replace(Group16, ", ", "\n"))) %>%
+  ggplot() +
+  geom_tile(aes(x=SubjectID, y=OriginSubjectID, fill=n)) +
+  viridis::scale_fill_viridis(na.value = NA) +
+  labs(
+    x="Subject ID of sample", 
+    y="Subject ID from which protein\nsequence was assembled", 
+    fill="Number of proteins\ndetected") +
+  coord_equal() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90, vjust=0.4, hjust=1))
+ggsave("igram_proteomics_custom_original.pdf", width=6, height=5)
+ggsave("igram_meconium_revision_figS18B.pdf", width=6, height=5)
+ggsave("igram_meconium_revision_figS18B.png", width=6, height=5, dpi=300)
+```
+
+```{r}
+protb_orig_total <- protb_wide %>%
+  mutate(OriginSubjectID = substr(Description, 0, 4)) %>%
+  count(OriginSubjectID) %>%
+  rename(`Proteins from own assembly detected by any sample` = n)
+  
+protb_own <- protb %>%
+  filter(OriginSubjectID == SubjectID) %>%
+  group_by(OriginSubjectID, SubjectID, Group16) %>%
+  summarize(`Proteins from own assembly detected in this sample` = sum(Abundance > 0)) %>%
+  ungroup()
+
+protb_other <- protb %>%
+  filter(OriginSubjectID != SubjectID) %>%
+  group_by(SubjectID) %>%
+  summarize(`Proteins from other assemblies detected in this sample` = sum(Abundance > 0)) %>%
+  ungroup()
+
+protb_orig <- protb_own %>%
+  left_join(protb_orig_total, by="OriginSubjectID") %>%
+  left_join(protb_other, by="SubjectID")
+```
+
+```{r}
+protb_orig %>%
+  gather(ProteinType, n, 4:6) %>%
+  mutate(ProteinType = fct_rev(ProteinType)) %>%
+  ggplot() +
+  geom_col(aes(x=SubjectID, y=n, fill=ProteinType), position="dodge") +
+  ggsci::scale_fill_jco() +
+  labs(fill="", x="", y="Number of proteins detected") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), 
+    legend.position = "top", legend.direction = "vertical")
+ggsave("igram_proteomics_custom_original_bars.pdf", width=5, height=5)
+ggsave("igram_meconium_revision_figS18C.pdf", width=5, height=5)
+ggsave("igram_meconium_revision_figS18C.png", width=5, height=5, dpi=300)
+```
+
+### Distribution
+
+```{r}
+protb_summary <- protb_totalbact %>%
+  summarize_at(vars(TotalBactProtAbund), funs(mean, median, sd), na.rm=T)
+```
+
+```{r}
+protb_totalbact %>%
+  ggplot() +
+  geom_histogram(aes(x=TotalBactProtAbund), bins=40, boundary=0) +
+  geom_vline(xintercept=protb_summary$median, linetype="dashed") +
+  labs(y="Number of samples", x="Proportion of bacterial proteins") +
+  theme_bw()
+```
+
+### Time since birth
+
+```{r}
+protb_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  ggplot() +
+  geom_point(aes(x=hrs_to_collection, y=TotalBactProtAbund, color=HostGroup)) +
+  scale_color_manual(values=host_palette) +
+  scale_y_log10() +
+  labs(
+    x="Hours to collection", 
+    y="Relative abundance of bacterial proteins", color="") +
+  theme_bw()
+```
+
+```{r}
+protb_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  cor.test(~ hrs_to_collection + TotalBactProtAbund, data=., method="spearman")
+```
+
+### Host DNA
+
+```{r}
+protb_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  wilcox.test(TotalBactProtAbund ~ HostGroup, data=.)
+protb_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  cor.test(~ TotalBactProtAbund + HostProp, data=., method="spearman")
+protb_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  kruskal.test(TotalBactProtAbund ~ Group16, data=.)
+```
+
+### qPCR
+
+```{r}
+protb_totalbact %>%
+  mutate(copy_num_per_gram_feces = replace_na(copy_num_per_gram_feces, 1e3)) %>%
+  ggplot() +
+  geom_point(aes(x=copy_num_per_gram_feces, y=TotalBactProtAbund, color=HostGroup)) +
+  scale_color_manual(values=host_palette) +
+  scale_y_log10() +
+  scale_x_log10() +
+  labs(
+    x="16S qPCR", 
+    y="Relative abundance of bacterial proteins", color="") +
+  theme_bw()
+```
+
+```{r}
+protb_totalbact %>%
+  mutate(copy_num_per_gram_feces = replace_na(copy_num_per_gram_feces, 1e3)) %>%
+  cor.test(~ copy_num_per_gram_feces + TotalBactProtAbund, data=., method="spearman")
+```
+
+### Richness
+
+```{r}
+protb_totalbact %>%
+  ggplot() +
+  geom_point(aes(x=Richness, y=TotalBactProtAbund, color=HostGroup)) +
+  scale_color_manual(values=host_palette) +
+  scale_y_log10() +
+  labs(
+    x="Hours to collection", 
+    y="Relative abundance of bacterial proteins", color="") +
+  theme_bw()
+```
+
+```{r}
+protb_totalbact %>%
+  cor.test(~ Richness + TotalBactProtAbund, data=., method="spearman")
+```
+
+
+# Bacterial targeted (prot3)
+
+## Quality control
+
+### Number of PSMs
+
+Bacterial proteins identified had a lower number of PSMs.
+
+```{r}
+prot3_info %>%
+  mutate(Species = str_replace(Species, " ", "\n")) %>%
+  ggplot() +
+  geom_boxplot(aes(x=Species, y=`Number of PSMs`, fill=Species)) +
+  scale_y_log10() +
+  ggsci::scale_fill_futurama(guide=F) +
+  labs(x="") +
+  theme_bw()
+```
+
+```{r}
+prot3_info %>%
+  mutate(Species = fct_relevel(Species, "Human")) %>%
+  glm(`Number of PSMs` ~ Species, data=., family="poisson") %>%
+  summary()
+prot3_info %>%
+  mutate(Species = fct_relevel(Species, "Human")) %>%
+  kruskal.test(`Number of PSMs` ~ Species, data=.)
+prot3_info %>%
+  mutate(Species = fct_relevel(Species, "Human")) %>%
+  with(pairwise.wilcox.test(`Number of PSMs`, Species))
+```
+
+### Coverage
+
+```{r}
+prot3_info %>%
+  ggplot() +
+  geom_histogram(
+    aes(x=`Coverage in Percent`, fill=Species), 
+    binwidth=10, boundary=0)
+```
+
+```{r}
+prot3_qc <- prot3 %>%
+  filter(`Coverage in Percent` >= 5) %>%
+  group_by(SubjectID) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+```
+
+```{r}
+prot3_qc %>%
+  filter(!(Species %in% "Human")) %>%
+  count(Accession, Description)
+```
+```{r}
+prot3_qc %>%
+  filter(!(Species %in% "Human")) %>%
+  filter(Abundance > 0) %>%
+  ggplot() +
+  geom_tile(aes(x=SubjectID, y=Accession, fill=Abundance)) +
+  facet_grid(Species ~ Group16, scales="free", space="free") +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))
+```
+
+
+## Total bacterial protein
+
+```{r}
+prot3_totalbact <- prot3 %>%
+  filter(!(Species %in% "Human")) %>%
+  group_by(SubjectID) %>%
+  summarize(TotalBactProtAbund = sum(Abundance)) %>%
+  ungroup() %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  left_join(mp_richness, by="SampleID")
+```
+
+### Distribution
+
+```{r}
+prot3_summary <- prot3_totalbact %>%
+  summarize_at(vars(TotalBactProtAbund), funs(mean, median, sd), na.rm=T)
+```
+
+```{r}
+prot3_totalbact %>%
+  ggplot() +
+  geom_histogram(aes(x=TotalBactProtAbund), binwidth = 0.002, boundary=0) +
+  geom_vline(xintercept=prot3_summary$median, linetype="dashed") +
+  annotate(
+    "text", x=prot3_summary$median + 0.001, y=20.5, 
+    label=paste("Median", round(prot3_summary$median, 4)), 
+    hjust=0, vjust=0) +
+  labs(y="Number of samples", x="Proportion of bacterial proteins") +
+  theme_bw()
+```
+
+### Time since birth
+
+```{r}
+prot3_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  ggplot() +
+  geom_point(aes(x=hrs_to_collection, y=TotalBactProtAbund, color=HostGroup)) +
+  scale_color_manual(values=host_palette, guide=F) +
+  scale_y_log10() +
+  labs(
+    x="Hours to collection", 
+    y="Relative abundance of\nbacterial proteins", color="") +
+  theme_bw()
+ggsave("igram_meconium_fig4Aleft_revision.pdf", width=3.9, height=3)
+```
+
+```{r}
+prot3_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  cor.test(~ hrs_to_collection + TotalBactProtAbund, data=., method="spearman")
+```
+
+### Host DNA
+
+```{r}
+prot3_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  wilcox.test(TotalBactProtAbund ~ HostGroup, data=.)
+prot3_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  cor.test(~ TotalBactProtAbund + HostProp, data=., method="spearman")
+prot3_totalbact %>%
+  filter(!is.na(hrs_to_collection)) %>%
+  kruskal.test(TotalBactProtAbund ~ Group16, data=.)
+```
+
+### qPCR
+
+```{r}
+prot3_totalbact %>%
+  mutate(copy_num_per_gram_feces = replace_na(copy_num_per_gram_feces, 1e3)) %>%
+  ggplot() +
+  geom_point(aes(x=dna_ratio, y=TotalBactProtAbund, color=HostGroup)) +
+  scale_color_manual(values=host_palette) +
+  scale_y_log10() +
+  scale_x_log10() +
+  labs(
+    x="Bacterial-to-human DNA ratio", 
+    y="", color="") +
+  theme_bw()
+ggsave("igram_meconium_fig4Aright_revision.pdf", width=5, height=3)
+```
+
+```{r}
+prot3_totalbact %>%
+  cor.test(~ dna_ratio + TotalBactProtAbund, data=., method="spearman")
+```
+
+### Richness
+
+```{r}
+prot3_totalbact %>%
+  ggplot() +
+  geom_point(aes(x=Richness, y=TotalBactProtAbund, color=HostGroup)) +
+  scale_color_manual(values=host_palette) +
+  scale_y_log10() +
+  labs(
+    x="Hours to collection", 
+    y="Relative abundance of bacterial proteins", color="") +
+  theme_bw()
+```
+
+```{r}
+prot3_totalbact %>%
+  cor.test(~ Richness + TotalBactProtAbund, data=., method="spearman")
+```
+
+### Strain richness
+
+```{r}
+prot3_totalbact %>%
+  left_join(strain_richness_targeted, by="SubjectID") %>%
+  ggplot() +
+  geom_point(aes(x=StrainRichness, y=TotalBactProtAbund, color=HostGroup)) +
+  scale_color_manual(values=host_palette) +
+  scale_y_log10() +
+  labs(
+    x="Number of strains detected", 
+    y="Relative abundance of bacterial proteins", color="") +
+  theme_bw()
+```
+
+```{r}
+prot3_totalbact %>%
+  left_join(strain_richness_targeted, by="SubjectID") %>%
+  cor.test(~ StrainRichness + TotalBactProtAbund, data=., method="spearman")
+```
+
+```{r}
+prot3_totalbact %>%
+  left_join(strain_richness_targeted, by="SubjectID") %>%
+  ggplot() +
+  geom_point(aes(x=HasStrains, y=TotalBactProtAbund, color=HostGroup)) +
+  scale_color_manual(values=host_palette) +
+  scale_y_log10() +
+  labs(
+    x="Number of strains detected", 
+    y="Relative abundance of bacterial proteins", color="") +
+  theme_bw()
+```
+
+```{r}
+prot3_totalbact %>%
+  left_join(strain_richness_targeted, by="SubjectID") %>%
+  wilcox.test(TotalBactProtAbund ~ HasStrains, data=.)
+```
+
+## Species together
+
+```{r}
+prot3_bact <- prot3 %>%
+  filter(!(Species %in% "Human")) %>%
+  group_by(SubjectID, Species) %>%
+  summarize(TotalAbundance = sum(Abundance, na.rm=T)) %>%
+  ungroup() %>%
+  group_by(SubjectID) %>%
+  mutate(WithinBactAbundance = TotalAbundance / sum(TotalAbundance)) %>%
+  ungroup() %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  left_join(mp_richness, by="SampleID")
+```
+
+
+```{r}
+prot3_bact %>%
+  mutate(SubjectID = fct_reorder(SubjectID, ifelse(Species %in% "Escherichia coli", TotalAbundance, 0))) %>%
+  ggplot(aes(x=SubjectID, y=TotalAbundance, fill=Species)) +
+  geom_col() +
+  facet_grid(~ Group16, scales="free_x", space="free_x") +
+  scale_fill_futurama() +
+  labs(x="", y="Relative abundance of bacterial protein", fill="") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))
+ggsave("igram_proteomics_targeted_bars.pdf", width=10, height=3)
+```
+
+```{r}
+prot3_bact_assembled <- prot3_bact %>%
+  mutate(SubjectID = fct_reorder(SubjectID, hrs_to_collection)) %>%
+  mutate(
+    EnteroAssembled = SubjectID %in% filter(
+      strains_pres, str_detect(Taxon, "Enterobacteriaceae"))$SubjectID,
+    BacterAssembled = SubjectID %in% filter(
+      strains_pres, str_detect(Taxon, "Bacteroidetes"))$SubjectID,
+    BacilliAssembled = SubjectID %in% filter(
+      strains_pres, str_detect(Taxon, "Bacilli"))$SubjectID) %>%
+  filter(EnteroAssembled | BacterAssembled | BacilliAssembled) %>%
+  mutate(Assembled = paste(EnteroAssembled, BacterAssembled, BacilliAssembled, sep="\n"))
+
+prot3_bact_assembled %>%
+  mutate(Species = str_replace(Species, " ", "\n")) %>%
+  ggplot(aes(x=SubjectID, y=WithinBactAbundance, color=Species)) +
+  geom_point() +
+  facet_grid(Species ~ Assembled, scales="free", space="free_x") +
+  scale_fill_futurama() +
+  labs(x="", y="Relative abundance of bacterial protein", fill="") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))
+ggsave("igram_proteomics_targeted_withinbact.pdf", width=10, height=5)
+
+```
+
+```{r}
+prot3_bact_assembled %>%
+  filter(Species %in% c("Bacteroides vulgatus", "Escherichia coli")) %>%
+  select(SubjectID, Species, TotalAbundance) %>%
+  spread(Species, TotalAbundance) %>%
+  mutate(
+    EnteroAssembled = SubjectID %in% filter(
+      strains_pres, str_detect(Taxon, "Enterobacteriaceae"))$SubjectID,
+    BacterAssembled = SubjectID %in% filter(
+      strains_pres, str_detect(Taxon, "Bacteroidetes"))$SubjectID) %>%
+  filter(EnteroAssembled | BacterAssembled) %>%
+  mutate(EcoliBactRatio = `Escherichia coli` / `Bacteroides vulgatus`) %>%
+  mutate(EcoliBactTotal = `Escherichia coli` + `Bacteroides vulgatus`) %>%
+  ggplot() +
+  geom_point(aes(x=EcoliBactTotal, y=EcoliBactRatio, shape=BacterAssembled)) +
+  scale_y_log10()
+```
+
+
+```{r}
+prot3_bact %>%
+  filter(Species %in% "Escherichia coli") %>%
+  select(SubjectID, Group16, TotalAbundance) %>%
+  arrange(desc(TotalAbundance))
+```
+
+
+```{r}
+prot3_freq <- prot3 %>%
+  filter(Abundance > 0) %>%
+  mutate(Accession = fct_infreq(Accession)) %>%
+  count(Species, Accession)
+prot3_freq %>% count(Species)
+prot3_freq %>%
+  ggplot() +
+  geom_col(aes(x=Accession, y=n)) +
+  facet_grid(Species ~ ., scale = "free_y", space = "free_y") +
+  coord_flip()
+```
+
+Try PCoA
+
+```{r}
+prot3_bact_mat <- prot3 %>%
+  filter(!(Species %in% "Human")) %>%
+  group_by(SubjectID, Accession) %>%
+  summarize(Abundance = sum(Abundance)) %>%
+  ungroup() %>%
+  df_to_matrix("SubjectID", "Accession", "Abundance")
+prot3_bact_bc <- vegan::vegdist(prot3_bact_mat)
+pc <- ape::pcoa(prot3_bact_bc)
+vector_df <- pc$vectors %>%
+  as.data.frame() %>%
+  rownames_to_column("SubjectID") %>%
+  select(1:4) %>%
+  left_join(s0_clinical, by="SubjectID") %>%
+  mutate(
+    EcoliAssembled = SubjectID %in% ecoli_subjs,
+    BvulgAssembled = SubjectID %in% bvulg_subjs,
+    EfaecAssembled = SubjectID %in% efaec_subjs) %>%
+  mutate(AnyAssembled = EcoliAssembled | BvulgAssembled | EfaecAssembled)
+vector_df %>%
+  ggplot() +
+  geom_point(aes(x=Axis.1, y=Axis.2, color=Group16, shape=AnyAssembled)) 
+```
+
+Which bacterial proteins had the highest median abundance?
+
+```{r}
+prot3_top_bact <- prot3 %>%
+  filter(!Species %in% "Human") %>%
+  group_by(Accession, Description, Species) %>%
+  summarize_at(vars(Abundance), funs(mean, median)) %>%
+  ungroup() %>%
+  arrange(desc(mean)) %>%
+  slice(1:10)
+```
+
+
+
+## E coli
+
+```{r}
+ecoli_abund_test <- prot3 %>%
+  filter(Species %in% "Escherichia coli") %>%
+  mutate(Abundance = replace_na(Abundance, 0)) %>%
+  mutate(EcoliAssembled = factor(EcoliAssembled, levels = c(T, F), labels=c("Assembled", "Not assembled"))) %>%
+  group_by(Accession) %>%
+  filter(length(unique(EcoliAssembled)) > 1) %>%
+  ungroup() %>%
+  group_by(Accession) %>%
+  do(broom::tidy(wilcox.test(Abundance ~ EcoliAssembled, data=., alternative="greater"))) %>%
+  ungroup()
+```
+
+```{r}
+ecoli_pres_test <- prot3 %>%
+  filter(Species %in% "Escherichia coli") %>%
+  mutate(ProteinPresent = !is.na(Abundance)) %>%
+  group_by(Accession) %>%
+  filter(length(unique(EcoliAssembled)) > 1) %>%
+  filter(length(unique(ProteinPresent)) > 1) %>%
+  ungroup() %>%
+  group_by(Accession) %>%
+  do(with(., broom::tidy(fisher.test(table(ProteinPresent, EcoliAssembled))))) %>%
+  ungroup()
+```
+
+```{r}
+ecoli_abund_test %>%
+  top_n(20, -p.value) %>%
+  left_join(prot3, by="Accession") %>%
+  mutate(Abundance = replace_na(Abundance, 1)) %>%
+  ggplot() +
+  geom_histogram(aes(x=Abundance, fill=EcoliAssembled), bins=30) +
+  scale_x_log10() +
+  facet_wrap(~ Accession)
+```
+
+## E faecalis
+
+```{r}
+efaec_abund_test <- prot3 %>%
+  filter(Species %in% "Enterococcus faecalis") %>%
+  mutate(Abundance = replace_na(Abundance, 0)) %>%
+  mutate(EfaecAssembled = factor(EfaecAssembled, levels = c(T, F), labels=c("Assembled", "Not assembled"))) %>%
+  group_by(Accession) %>%
+  filter(length(unique(EfaecAssembled)) > 1) %>%
+  ungroup() %>%
+  group_by(Accession) %>%
+  do(broom::tidy(wilcox.test(Abundance ~ EfaecAssembled, data=., alternative="greater"))) %>%
+  ungroup()
+```
+
+```{r}
+faec_pres_test <- prot3 %>%
+  filter(Species %in% "Enterococcus faecalis") %>%
+  mutate(ProteinPresent = !is.na(Abundance)) %>%
+  group_by(Accession) %>%
+  filter(length(unique(EfaecAssembled)) > 1) %>%
+  filter(length(unique(ProteinPresent)) > 1) %>%
+  ungroup() %>%
+  group_by(Accession) %>%
+  do(with(., broom::tidy(fisher.test(table(ProteinPresent, EfaecAssembled))))) %>%
+  ungroup()
+```
+
+```{r}
+efaec_abund_test %>%
+  top_n(10, -p.value) %>%
+  left_join(prot3, by="Accession") %>%
+  mutate(Abundance = replace_na(Abundance, 1)) %>%
+  ggplot() +
+  geom_histogram(aes(x=Abundance, fill=EfaecAssembled), bins=30) +
+  scale_x_log10() +
+  facet_wrap(~ Accession)
+```
+
+## B vulgatus
+
+```{r warning=FALSE}
+bvulg_abund_test <- prot3 %>%
+  filter(Species %in% "Bacteroides vulgatus") %>%
+  mutate(Abundance = replace_na(Abundance, 0)) %>%
+  mutate(BvulgAssembled = factor(BvulgAssembled, levels = c(T, F), labels=c("Assembled", "Not assembled"))) %>%
+  group_by(Accession) %>%
+  filter(length(unique(BvulgAssembled)) > 1) %>%
+  ungroup() %>%
+  group_by(Accession) %>%
+  do(broom::tidy(wilcox.test(Abundance ~ BvulgAssembled, data=., alternative="greater"))) %>%
+  ungroup()
+```
+
+```{r}
+bvulg_pres_test <- prot3 %>%
+  filter(Species %in% "Bacteroides vulgatus") %>%
+  mutate(ProteinPresent = !is.na(Abundance)) %>%
+  group_by(Accession) %>%
+  filter(length(unique(BvulgAssembled)) > 1) %>%
+  filter(length(unique(ProteinPresent)) > 1) %>%
+  ungroup() %>%
+  group_by(Accession) %>%
+  do(with(., broom::tidy(fisher.test(table(ProteinPresent, BvulgAssembled))))) %>%
+  ungroup()
+```
+
+```{r}
+bvulg_abund_test %>%
+  top_n(10, -p.value) %>%
+  left_join(prot3, by="Accession") %>%
+  mutate(Abundance = replace_na(Abundance, 1)) %>%
+  filter(!is.na(Abundance)) %>%
+  ggplot() +
+  geom_histogram(aes(x=Abundance, fill=BvulgAssembled), bins=30) +
+  scale_x_log10() +
+  facet_wrap(~ Accession)
+```
+
+# Bacterial targeted (prot4)
+
+Ran only E. coli samples (2019)
+
+```{r}
+prot4 %>%
+  count(SampleID)
+```
+
+
+```{r}
+prot4_freq <- prot4 %>%
+  mutate(Species = replace_na(Species, "Human")) %>%
+  filter(!is.na(NormAbund)) %>%
+  mutate(Accession = fct_infreq(Accession)) %>%
+  count(Accession, Species) %>%
+  mutate(Species = factor(Species))
+```
+
+```{r}
+prot4_freq %>%
+  ggplot() +
+  geom_col(aes(x=Accession, y=n)) +
+  facet_grid(Species ~ ., scale = "free_y", space = "free_y") +
+  coord_flip() +
+  theme(
+    strip.text.y = element_text(angle=0), 
+    axis.text.y = element_blank(), 
+    axis.ticks.y = element_blank())
+```
+
+```{r}
+prot4_freq %>%
+  mutate(Species = str_replace(Species, " ", "\n")) %>%
+  ggplot() +
+  geom_hline(yintercept = 7, linetype="dashed") +
+  geom_boxplot(aes(x=Species, y=n), coef=1e9) +
+  scale_y_continuous(limits=c(0, 13)) +
+  labs(x="Protein sequence: genome of origin", y="Number of samples detected") +
+  theme_bw()
+```
+
+
+```{r}
+prot4_freq %>%
+  with(kruskal.test(n, Species))
+prot4_freq %>%
+  with(pairwise.wilcox.test(n, Species))
+```
+```{r}
+prot4_freq_list <- prot4_freq %>% with(tapply(n, Species, c))
+with(prot4_freq_list, ks.test(`Escherichia coli`, `Bacteroides vulgatus`))
+with(prot4_freq_list, ks.test(`Escherichia coli`, `Human`))
+```
+
+
+# Summary figure
+
+```{r}
+human_proteins <- c("SERPINA3", "CDC42", "FN1", "ACTN4", "FLT1")
+
+psum_total <- prot_conc %>%
+  select(SubjectID, TotalConc)
+psum_bact <- prot3_totalbact %>%
+  select(SubjectID, TotalBactProtAbund)
+psum_human <- prot %>%
+  filter(GeneName %in% human_proteins) %>%
+  select(SubjectID, GeneName, PctAbund)
+
+all_subjs <- read_csv("summary_heatmap_subject_ids.csv") %>%
+  mutate(SubjectID = fct_inorder(SubjectID))
+```
+
+```{r}
+psum_annot <- all_subjs %>%
+  left_join(psum_total, by="SubjectID") %>%
+  left_join(psum_bact, by="SubjectID") %>%
+  rename(
+    `Total protein concentration` = TotalConc,
+    `Bacterial protein rel. abund.` = TotalBactProtAbund) %>%
+  as.data.frame() %>%
+  column_to_rownames("SubjectID")
+psum_mat <- psum_human %>%
+  right_join(all_subjs, by="SubjectID") %>%
+  complete(GeneName, SubjectID) %>%
+  #filter(!(SubjectID %in% "s208")) %>%
+  filter(!is.na(GeneName)) %>%
+  df_to_matrix("SubjectID", "GeneName", "PctAbund")
+psum_mat <- psum_mat[as.character(all_subjs$SubjectID),]
+psum_mat <- scale(psum_mat)
+```
+
+```{r}
+psum_palette <- colorRampPalette(
+  ggsci::pal_material("deep-purple")(9), bias=1)(100)
+
+
+pheatmap::pheatmap(
+  psum_mat, color = psum_palette, na_col = "#FFFFFF",
+  filename = "igram_meconium_revision_figS26_prot.pdf",
+  cluster_cols = F, cluster_rows = F,
+  annotation_row = psum_annot,
+  cellwidth=10, cellheight=10)
+```
+
+
+To do:
+
+* Associate overall level of bacterial DNA with bacterial proteins (use copy_num_per_gram_feces)
+* Look at detection frequency in prot4
